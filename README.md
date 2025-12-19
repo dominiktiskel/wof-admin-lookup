@@ -24,6 +24,11 @@ We think open data, open source, and open strategy win over proprietary solution
 
 # Pelias Who's On First Admin Lookup
 
+> **ℹ️ Custom Fork Notice**  
+> This is a fork of [pelias/wof-admin-lookup](https://github.com/pelias/wof-admin-lookup) with enhancements for OSM admin priority.  
+> Fork: [dominiktiskel/wof-admin-lookup](https://github.com/dominiktiskel/wof-admin-lookup)  
+> Used in conjunction with [dominiktiskel/openstreetmap](https://github.com/dominiktiskel/openstreetmap)
+
 ## Overview
 
 ### What is admin lookup?

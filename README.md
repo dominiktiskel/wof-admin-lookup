@@ -45,6 +45,24 @@ given the latitude and longitude of a point, populate the admin hierarchy by
 finding all the polygons for countries, cities, neighborhoods, and other admin
 fields that contain the point.
 
+#### Priority of Data Sources
+
+**New behavior:** Admin lookup now respects pre-existing parent hierarchy data in documents. This allows importers to prioritize their own administrative data over Who's on First data.
+
+When a document already has a parent field populated (e.g., from OpenStreetMap `addr:city` tags), admin lookup will:
+- **Skip** that field and preserve the existing value
+- **Fill in** any missing fields from Who's on First data
+- **Log** when OSM data is used instead of WOF data (at debug level)
+
+This hybrid approach provides:
+1. More accurate local data when the source (like OSM) has better information
+2. Complete administrative hierarchy by filling gaps with WOF data
+3. Backwards compatibility - documents without pre-existing data work as before
+
+**Example:**
+
+If a document has `parent.locality = ["Kraków"]` from OSM tags, but WOF lookup would assign `["Nowa Huta"]`, the document will keep `["Kraków"]`. However, if `parent.region` is missing, it will be filled from WOF data.
+
 ### Usage
 
 There are two possible ways to retrieve admin hierarchy: using remote

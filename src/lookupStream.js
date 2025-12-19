@@ -49,12 +49,26 @@ function createPipResolverStream(pipResolver, config) {
         });
       }
 
+      // Get list of admin fields that were already populated from OSM tags
+      const osmAdminFields = doc.getMeta('osmAdminFields') || [];
+
       doc.getParentFields()
         // filter out placetypes for which there are no values
         .filter((placetype) => { return !_.isEmpty(result[placetype]); } )
         // assign parents into the doc
         .forEach((placetype) => {
           const values = result[placetype];
+
+          // Check if this field was already populated from OSM data
+          if (osmAdminFields.includes(placetype)) {
+            logger.debug('Skipping WOF admin lookup - using OSM data', {
+              gid: doc.getGid(),
+              placetype: placetype,
+              osmValue: doc.parent[placetype] ? doc.parent[placetype][0] : null,
+              wofValue: values[0].name
+            });
+            return; // Skip this field, keep OSM data
+          }
 
           try {
             // addParent can throw an error if, for example, name is an empty string

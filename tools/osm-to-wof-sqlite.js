@@ -17,7 +17,8 @@
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
-const turf = require('@turf/turf');
+const turfArea = require('@turf/area').default;
+const { feature } = require('@turf/helpers');
 const { program } = require('commander');
 const cliProgress = require('cli-progress');
 
@@ -123,7 +124,8 @@ function calculateBBox(coords) {
  */
 function calculateArea(geometry) {
   try {
-    const area = turf.area(geometry);
+    const geojsonFeature = feature(geometry);
+    const area = turfArea(geojsonFeature);
     return Math.round(area / 1000000 * 100) / 100; // km² z 2 miejscami
   } catch (e) {
     return 0;
@@ -144,27 +146,20 @@ function isValidGeometry(geometry) {
 }
 
 /**
- * Naprawia prostą geometrię (jeśli możliwe)
+ * Próbuje naprawić prostą geometrię (podstawowa walidacja)
  */
 function fixGeometry(geometry) {
   if (!geometry) return null;
   
-  try {
-    // Próba użycia turf do naprawy
-    const feature = turf.feature(geometry);
-    
-    // Sprawdź czy jest poprawny
-    if (turf.booleanValid(feature)) {
-      return geometry;
-    }
-    
-    // Próba naprawy przez buffer(0)
-    const fixed = turf.buffer(feature, 0);
-    if (fixed && fixed.geometry) {
-      return fixed.geometry;
-    }
-  } catch (e) {
-    // Ignoruj błędy naprawy
+  // Podstawowa walidacja - sprawdź czy geometria ma wymagane pola
+  if (!geometry.type || !geometry.coordinates) {
+    return null;
+  }
+  
+  // Dla Polygon/MultiPolygon sprawdź czy są współrzędne
+  const coords = extractAllCoordinates(geometry);
+  if (coords.length < 3) {
+    return null;
   }
   
   return geometry;

@@ -1,10 +1,10 @@
 # PowerShell script to prepare OSM boundaries for conversion
-# Usage: .\prepare-osm-boundaries.ps1 -Region "dolnoslaskie"
+# Usage: .\prepare-osm-boundaries.ps1 -Country "poland" [-Region "dolnoslaskie"]
 
 param(
-    [Parameter(Mandatory=$true)]
     [string]$Region,
     
+    [Parameter(Mandatory=$true)]
     [string]$Country = "poland",
     
     [string]$OutputDir = ".",
@@ -16,22 +16,34 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Konfiguracja
-$GeofabrikBase = "http://download.geofabrik.de/europe"
-$PbfUrl = "$GeofabrikBase/$Country/$Region-latest.osm.pbf"
-$PbfFile = Join-Path $OutputDir "$Region-latest.osm.pbf"
-$BoundariesPbf = Join-Path $OutputDir "$Region-admin-boundaries.osm.pbf"
-$GeoJsonFile = Join-Path $OutputDir "$Region-boundaries.geojson"
-$SqliteFile = Join-Path $OutputDir "whosonfirst-data-osm-admin-$Region.db"
+# Określ obszar (region lub kraj) i skonstruuj URL
+if ($Region) {
+    $Area = $Region
+    $PbfUrl = "http://download.geofabrik.de/europe/$Country/$Region-latest.osm.pbf"
+    $AreaType = "Region"
+} else {
+    $Area = $Country
+    $PbfUrl = "http://download.geofabrik.de/europe/$Country-latest.osm.pbf"
+    $AreaType = "Country"
+}
+
+# Konfiguracja plików
+$PbfFile = Join-Path $OutputDir "$Area-latest.osm.pbf"
+$BoundariesPbf = Join-Path $OutputDir "$Area-admin-boundaries.osm.pbf"
+$GeoJsonFile = Join-Path $OutputDir "$Area-boundaries.geojson"
+$SqliteFile = Join-Path $OutputDir "whosonfirst-data-osm-admin-$Area.db"
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " OSM Boundaries Preparation Script" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Region: $Region" -ForegroundColor Blue
-Write-Host "Country: $Country" -ForegroundColor Blue
-Write-Host "Output: $OutputDir" -ForegroundColor Blue
+Write-Host "Area Type: $AreaType" -ForegroundColor Blue
+Write-Host "Country:   $Country" -ForegroundColor Blue
+if ($Region) {
+    Write-Host "Region:    $Region" -ForegroundColor Blue
+}
+Write-Host "Output:    $OutputDir" -ForegroundColor Blue
 Write-Host ""
 
 # Krok 1: Pobierz dane OSM

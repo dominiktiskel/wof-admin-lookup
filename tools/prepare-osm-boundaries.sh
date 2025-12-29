@@ -1,6 +1,6 @@
 #!/bin/bash
 # Bash script to prepare OSM boundaries for conversion
-# Usage: ./prepare-osm-boundaries.sh -r dolnoslaskie [-c poland] [-o ./output]
+# Usage: ./prepare-osm-boundaries.sh -c poland [-r dolnoslaskie] [-o ./output]
 
 set -e
 
@@ -14,26 +14,31 @@ GRAY='\033[0;90m'
 NC='\033[0m' # No Color
 
 # Domyślne wartości
-COUNTRY="poland"
+COUNTRY=""
+REGION=""
 OUTPUT_DIR="."
 SKIP_DOWNLOAD=false
 SKIP_CONVERT=false
 
 # Parsowanie argumentów
 usage() {
-    echo "Usage: $0 -r REGION [-c COUNTRY] [-o OUTPUT_DIR] [--skip-download] [--skip-convert]"
+    echo "Usage: $0 -c COUNTRY [-r REGION] [-o OUTPUT_DIR] [--skip-download] [--skip-convert]"
     echo ""
     echo "Options:"
-    echo "  -r, --region       Region name (e.g., dolnoslaskie) [required]"
-    echo "  -c, --country      Country name (default: poland)"
+    echo "  -c, --country      Country name (e.g., poland) [required]"
+    echo "  -r, --region       Region name (e.g., dolnoslaskie) [optional]"
     echo "  -o, --output       Output directory (default: current directory)"
     echo "  --skip-download    Skip downloading OSM data"
     echo "  --skip-convert     Skip GeoJSON conversion"
     echo "  -h, --help         Show this help message"
     echo ""
-    echo "Example:"
-    echo "  $0 -r dolnoslaskie"
-    echo "  $0 -r mazowieckie -c poland -o /tmp/boundaries"
+    echo "Examples:"
+    echo "  # Whole country:"
+    echo "  $0 -c poland"
+    echo ""
+    echo "  # Specific region:"
+    echo "  $0 -c poland -r dolnoslaskie"
+    echo "  $0 -c poland -r mazowieckie -o /tmp/boundaries"
     exit 1
 }
 
@@ -69,19 +74,29 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Sprawdź czy region jest podany
-if [ -z "$REGION" ]; then
-    echo -e "${RED}Error: Region is required${NC}"
+# Sprawdź czy kraj jest podany
+if [ -z "$COUNTRY" ]; then
+    echo -e "${RED}Error: Country is required${NC}"
     usage
 fi
 
-# Konfiguracja
+# Określ obszar (region lub kraj) i skonstruuj URL
 GEOFABRIK_BASE="http://download.geofabrik.de/europe"
-PBF_URL="${GEOFABRIK_BASE}/${COUNTRY}/${REGION}-latest.osm.pbf"
-PBF_FILE="${OUTPUT_DIR}/${REGION}-latest.osm.pbf"
-BOUNDARIES_PBF="${OUTPUT_DIR}/${REGION}-admin-boundaries.osm.pbf"
-GEOJSON_FILE="${OUTPUT_DIR}/${REGION}-boundaries.geojson"
-SQLITE_FILE="${OUTPUT_DIR}/whosonfirst-data-osm-admin-${REGION}.db"
+if [ -n "$REGION" ]; then
+    AREA="$REGION"
+    PBF_URL="${GEOFABRIK_BASE}/${COUNTRY}/${REGION}-latest.osm.pbf"
+    AREA_TYPE="Region"
+else
+    AREA="$COUNTRY"
+    PBF_URL="${GEOFABRIK_BASE}/${COUNTRY}-latest.osm.pbf"
+    AREA_TYPE="Country"
+fi
+
+# Konfiguracja plików
+PBF_FILE="${OUTPUT_DIR}/${AREA}-latest.osm.pbf"
+BOUNDARIES_PBF="${OUTPUT_DIR}/${AREA}-admin-boundaries.osm.pbf"
+GEOJSON_FILE="${OUTPUT_DIR}/${AREA}-boundaries.geojson"
+SQLITE_FILE="${OUTPUT_DIR}/whosonfirst-data-osm-admin-${AREA}.db"
 
 # Utwórz katalog wyjściowy
 mkdir -p "$OUTPUT_DIR"
@@ -91,9 +106,12 @@ echo -e "${CYAN}========================================${NC}"
 echo -e "${CYAN} OSM Boundaries Preparation Script${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
-echo -e "${BLUE}Region:  ${NC}$REGION"
-echo -e "${BLUE}Country: ${NC}$COUNTRY"
-echo -e "${BLUE}Output:  ${NC}$OUTPUT_DIR"
+echo -e "${BLUE}Area Type: ${NC}$AREA_TYPE"
+echo -e "${BLUE}Country:   ${NC}$COUNTRY"
+if [ -n "$REGION" ]; then
+    echo -e "${BLUE}Region:    ${NC}$REGION"
+fi
+echo -e "${BLUE}Output:    ${NC}$OUTPUT_DIR"
 echo ""
 
 # Krok 1: Pobierz dane OSM

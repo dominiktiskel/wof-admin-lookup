@@ -1,6 +1,6 @@
 {
   "name": "wof-osm-boundaries-converter",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Convert OSM administrative boundaries GeoJSON to WOF SQLite format for Pelias",
   "main": "osm-to-wof-sqlite.js",
   "scripts": {

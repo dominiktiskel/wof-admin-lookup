@@ -225,17 +225,63 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
   log('blue', `💾 Creating SQLite database: ${outputPath}`);
   const db = new Database(outputPath);
   
-  // Schemat zgodny z WOF (pelias-whosonfirst SQLiteStream)
+  // Schemat zgodny z WOF (pelias-whosonfirst SQLiteStream wymaga tabel geojson + spr)
   db.exec(`
+    -- Tabela geojson - przechowuje pełne GeoJSON features
     CREATE TABLE IF NOT EXISTS geojson (
       id INTEGER PRIMARY KEY,
-      body TEXT NOT NULL
+      body TEXT NOT NULL,
+      is_alt INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS geojson_by_id ON geojson(id);
+    
+    -- Tabela spr (Standard Place Response) - metadane do filtrowania
+    CREATE TABLE IF NOT EXISTS spr (
+      id INTEGER PRIMARY KEY,
+      parent_id INTEGER DEFAULT -1,
+      name TEXT,
+      placetype TEXT,
+      country TEXT,
+      repo TEXT,
+      latitude REAL,
+      longitude REAL,
+      min_latitude REAL,
+      min_longitude REAL,
+      max_latitude REAL,
+      max_longitude REAL,
+      is_current INTEGER DEFAULT 1,
+      is_deprecated INTEGER DEFAULT 0,
+      is_ceased INTEGER DEFAULT 0,
+      is_superseded INTEGER DEFAULT 0,
+      is_superseding INTEGER DEFAULT 0,
+      superseded_by TEXT,
+      supersedes TEXT,
+      lastmodified INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS spr_by_id ON spr(id);
+    CREATE INDEX IF NOT EXISTS spr_by_placetype ON spr(placetype);
+    CREATE INDEX IF NOT EXISTS spr_by_name ON spr(name);
+    
+    -- Tabela ancestors (opcjonalna - dla hierarchii)
+    CREATE TABLE IF NOT EXISTS ancestors (
+      id INTEGER,
+      ancestor_id INTEGER,
+      ancestor_placetype TEXT,
+      lastmodified INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS ancestors_by_id ON ancestors(id);
+    CREATE INDEX IF NOT EXISTS ancestors_by_ancestor_id ON ancestors(ancestor_id);
   `);
   
-  // Przygotuj statement INSERT
-  const insert = db.prepare('INSERT OR REPLACE INTO geojson (id, body) VALUES (?, ?)');
+  // Przygotuj statementy INSERT
+  const insertGeojson = db.prepare('INSERT OR REPLACE INTO geojson (id, body, is_alt) VALUES (?, ?, 0)');
+  const insertSpr = db.prepare(`
+    INSERT OR REPLACE INTO spr 
+    (id, parent_id, name, placetype, country, latitude, longitude, 
+     min_latitude, min_longitude, max_latitude, max_longitude,
+     is_current, is_deprecated, is_ceased, is_superseded, is_superseding, lastmodified)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0, 0, ?)
+  `);
   
   // Statystyki
   const stats = {
@@ -374,9 +420,34 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
         geometry: geometry
       };
       
-      // Zapisz do bazy
+      // Parsuj bbox na min/max lat/lon
+      const bboxParts = bbox.split(',').map(Number);
+      const minLon = bboxParts[0] || 0;
+      const minLat = bboxParts[1] || 0;
+      const maxLon = bboxParts[2] || 0;
+      const maxLat = bboxParts[3] || 0;
+      
+      // Zapisz do obu tabel
       try {
-        insert.run(wofId, JSON.stringify(wofRecord));
+        // Tabela geojson - pełny GeoJSON
+        insertGeojson.run(wofId, JSON.stringify(wofRecord));
+        
+        // Tabela spr - metadane do filtrowania (wymagane przez pelias-whosonfirst)
+        insertSpr.run(
+          wofId,                    // id
+          -1,                       // parent_id
+          name,                     // name
+          placetype,                // placetype
+          options.countryCode || 'PL', // country
+          centroid.lat,             // latitude
+          centroid.lon,             // longitude
+          minLat,                   // min_latitude
+          minLon,                   // min_longitude
+          maxLat,                   // max_latitude
+          maxLon,                   // max_longitude
+          Date.now()                // lastmodified
+        );
+        
         stats.processed++;
         stats.byPlacetype[placetype] = (stats.byPlacetype[placetype] || 0) + 1;
         progressBar.update(i + 1, { status: `${name.substring(0, 30)}...` });

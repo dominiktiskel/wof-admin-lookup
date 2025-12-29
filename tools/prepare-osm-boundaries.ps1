@@ -20,7 +20,7 @@ $ErrorActionPreference = "Stop"
 $GeofabrikBase = "http://download.geofabrik.de/europe"
 $PbfUrl = "$GeofabrikBase/$Country/$Region-latest.osm.pbf"
 $PbfFile = Join-Path $OutputDir "$Region-latest.osm.pbf"
-$BoundariesPbf = Join-Path $OutputDir "$Region-boundaries.osm.pbf"
+$BoundariesPbf = Join-Path $OutputDir "$Region-admin-boundaries.osm.pbf"
 $GeoJsonFile = Join-Path $OutputDir "$Region-boundaries.geojson"
 $SqliteFile = Join-Path $OutputDir "whosonfirst-data-osm-admin-$Region.db"
 
@@ -109,11 +109,11 @@ if ((Test-Path $GeoJsonFile) -and -not $SkipConvert) {
 
 if (-not (Test-Path $GeoJsonFile)) {
     try {
-        # Konwersja z filtrem na multipolygons (granice admin)
+        # Konwersja warstwy multipolygons (granice admin już przefiltrowane przez osmium)
         & ogr2ogr -f GeoJSON `
-            -sql "SELECT * FROM multipolygons WHERE boundary='administrative'" `
             $GeoJsonFile `
-            $BoundariesPbf
+            $BoundariesPbf `
+            multipolygons
         
         $size = (Get-Item $GeoJsonFile).Length / 1MB
         Write-Host "      Created: $GeoJsonFile ($([math]::Round($size, 2)) MB)" -ForegroundColor Green

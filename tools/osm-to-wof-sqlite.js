@@ -415,7 +415,11 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
           // Alternatywne nazwy (jeśli dostępne)
           ...(props['name:en'] && { 'name:eng_x_preferred': [props['name:en']] }),
           ...(props['name:de'] && { 'name:deu_x_preferred': [props['name:de']] }),
-          ...(props['name:pl'] && { 'name:pol_x_preferred': [props['name:pl']] })
+          ...(props['name:pl'] && { 'name:pol_x_preferred': [props['name:pl']] }),
+          
+          // Dla country dodaj ISO kod
+          ...(placetype === 'country' && { 'iso:country': options.countryCode || 'PL' }),
+          ...(placetype === 'country' && { 'wof:country': options.countryCode || 'PL' })
         },
         geometry: geometry
       };
@@ -433,12 +437,15 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
         insertGeojson.run(wofId, JSON.stringify(wofRecord));
         
         // Tabela spr - metadane do filtrowania (wymagane przez pelias-whosonfirst)
+        // Dla country, pole 'country' powinno być puste (nie kod kraju)
+        const countryValue = placetype === 'country' ? '' : (options.countryCode || 'PL');
+        
         insertSpr.run(
           wofId,                    // id
           -1,                       // parent_id
           name,                     // name
           placetype,                // placetype
-          options.countryCode || 'PL', // country
+          countryValue,             // country (puste dla country)
           centroid.lat,             // latitude
           centroid.lon,             // longitude
           minLat,                   // min_latitude

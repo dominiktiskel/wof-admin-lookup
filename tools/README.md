@@ -6,10 +6,28 @@ Narzędzie do konwersji granic administracyjnych z OpenStreetMap (GeoJSON) na fo
 
 Dane WOF często nie zawierają granic administracyjnych dla małych miejscowości (wsi, sołectw), szczególnie w Polsce. To narzędzie pozwala uzupełnić dane WOF o aktualne granice z OpenStreetMap.
 
+## 🎯 Dwie wersje narzędzia
+
+### **Wersja 1: Uzupełnienie WOF (podstawowa)**
+- Pliki: `osm-to-wof-sqlite.js`, `prepare-osm-boundaries.sh/ps1`
+- Cel: **Uzupełnienie** istniejących danych WOF o małe miejscowości
+- Generuje: Tylko wybrane poziomy (locality, borough, neighbourhood)
+- **Brak hierarchii** - wymaga współpracy z oryginalnym WOF
+- ⚠️ **Problem**: Może "zasłaniać" oryginalne WOF dane jeśli występują konflikty
+
+### **Wersja 2: Pełna hierarchia (zaawansowana)** ⭐ NOWA!
+- Pliki: `osm-to-wof-hierarchical.js`, `prepare-osm-hierarchical.sh/ps1`
+- Cel: **Całkowite zastąpienie** danych WOF danymi z OSM
+- Generuje: **WSZYSTKIE** poziomy (country, region, county, localadmin, locality, borough, neighbourhood)
+- **Pełna hierarchia** - buduje parent-child relationships
+- ✅ **Zalety**: Kompletna hierarchia, brak konfliktów, wszystkie admin levels
+
 ## Wymagania
 
 - Node.js v18+
 - npm
+- osmium-tool (do filtrowania PBF)
+- GDAL/ogr2ogr (do konwersji na GeoJSON)
 
 ## Instalacja
 
@@ -18,7 +36,9 @@ cd wof-admin-lookup/tools
 npm install
 ```
 
-## Użycie
+---
+
+## Użycie - Wersja 1 (Uzupełnienie WOF)
 
 ### Krok 1: Przygotowanie danych GeoJSON z OSM
 
@@ -167,6 +187,137 @@ Wygenerowane ID zaczynają się od `9xx` (np. `908123456789`) aby uniknąć koli
 2. Podczas importu OSM, Point-in-Polygon lookup sprawdza wszystkie załadowane poligony
 3. Jeśli punkt znajduje się w poligonie z naszego pliku OSM, otrzyma odpowiednią hierarchię administracyjną
 4. Priorytet: Twój custom fork już daje pierwszeństwo danym OSM z tagów `addr:*`, ale ten plik uzupełnia brakujące geometrie dla PIP lookup
+
+---
+
+## Użycie - Wersja 2 (Pełna hierarchia) ⭐ ZAAWANSOWANA
+
+### Automatyczny skrypt (zalecane):
+
+**Bash (Linux/Mac):**
+```bash
+./prepare-osm-hierarchical.sh -c poland
+# lub dla regionu:
+./prepare-osm-hierarchical.sh -c poland -r dolnoslaskie
+```
+
+**PowerShell (Windows):**
+```powershell
+.\prepare-osm-hierarchical.ps1 -Country poland
+# lub dla regionu:
+.\prepare-osm-hierarchical.ps1 -Country poland -Region dolnoslaskie
+```
+
+### Ręcznie krok po kroku:
+
+**1. Pobierz dane OSM**
+```bash
+wget http://download.geofabrik.de/europe/poland-latest.osm.pbf
+```
+
+**2. Filtruj granice (WSZYSTKIE poziomy)**
+```bash
+osmium tags-filter poland-latest.osm.pbf \
+  r/boundary=administrative \
+  -o poland-admin-boundaries-full.osm.pbf \
+  --overwrite
+```
+
+**3. Konwertuj na GeoJSON**
+```bash
+ogr2ogr -f GeoJSON \
+  poland-boundaries-full.geojson \
+  poland-admin-boundaries-full.osm.pbf \
+  multipolygons
+```
+
+**4. Generuj SQLite Z HIERARCHIĄ**
+```bash
+node osm-to-wof-hierarchical.js \
+  -i poland-boundaries-full.geojson \
+  -o whosonfirst-data-osm-full-pl.db \
+  --country PL
+```
+
+### Wdrożenie:
+
+**⚠️ WAŻNE**: Ta baza ZASTĘPUJE oryginalne WOF!
+
+```bash
+# 1. Backup oryginalnych danych WOF (opcjonalnie)
+mkdir -p /data/whosonfirst/sqlite/backup
+mv /data/whosonfirst/sqlite/whosonfirst-data-*.db /data/whosonfirst/sqlite/backup/
+
+# 2. Skopiuj nową bazę
+cp whosonfirst-data-osm-full-pl.db /data/whosonfirst/sqlite/
+
+# 3. Restart PIP service
+docker compose restart pip
+
+# 4. Reimport OSM
+pelias compose run openstreetmap ./bin/start
+```
+
+### Co buduje Wersja 2:
+
+**3-pass algorytm:**
+
+1. **Pass 1**: Przetwarza wszystkie features z GeoJSON
+   - Waliduje geometrie
+   - Oblicza centroidy, bbox, area
+   - Przygotowuje dane do Pass 2
+
+2. **Pass 2**: Buduje hierarchię
+   - Dla każdego feature używa Point-in-Polygon
+   - Znajduje parent (np. locality → localadmin → county → region → country)
+   - Tworzy pełne `wof:hierarchy` dla każdego poziomu
+
+3. **Pass 3**: Zapisuje do SQLite
+   - Tabela `geojson`: Pełne GeoJSON features
+   - Tabela `spr`: Metadane z `parent_id`
+   - Tabela `ancestors`: Pełna hierarchia dla szybkich zapytań
+
+**Przykład hierarchii:**
+
+```json
+{
+  "wof:id": 908123456,
+  "wof:name": "Zacharzyce",
+  "wof:placetype": "locality",
+  "wof:parent_id": 904567890,  // localadmin
+  "wof:hierarchy": [{
+    "locality_id": 908123456,
+    "localadmin_id": 904567890,
+    "county_id": 906789012,
+    "region_id": 904123456,
+    "country_id": 902000000
+  }]
+}
+```
+
+### Zalety Wersji 2:
+
+✅ **Kompletna hierarchia** - każdy poziom ma poprawnego parent  
+✅ **Brak konfliktów** - zastępuje WOF całkowicie  
+✅ **Wszystkie admin levels** - country do neighbourhood  
+✅ **Tabela ancestors** - szybkie zapytania o przodków  
+✅ **Point-in-Polygon** - automatyczne wykrywanie rodziców  
+
+### Wady Wersji 2:
+
+⚠️ **Wymaga WSZYSTKICH poziomów w OSM** - jeśli OSM nie ma admin_level=2 (country), to nie będzie country!  
+⚠️ **Długi czas przetwarzania** - budowanie hierarchii dla 30k features może zająć 10-30 minut  
+⚠️ **Zastępuje WOF** - tracisz dodatkowe dane WOF (population, concordances, etc.)  
+
+### Kiedy używać której wersji?
+
+| Scenariusz | Wersja 1 (Uzupełnienie) | Wersja 2 (Pełna hierarchia) |
+|------------|-------------------------|------------------------------|
+| **Małe miejscowości brak w WOF** | ✅ Zalecane | ⚠️ Overkill |
+| **WOF ma błędy w hierarchii** | ❌ Nie zadziała | ✅ Zalecane |
+| **Chcesz zachować WOF metadata** | ✅ Zalecane | ❌ Stracisz |
+| **Chcesz 100% OSM data** | ❌ Nie zadziała | ✅ Zalecane |
+| **Masz kompletne OSM admin levels** | ⚠️ Opcjonalne | ✅ Zalecane |
 
 ## Licencja
 

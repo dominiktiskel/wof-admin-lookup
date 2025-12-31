@@ -11,6 +11,7 @@
     "better-sqlite3": "^9.4.3",
     "@turf/area": "^6.5.0",
     "@turf/helpers": "^6.5.0",
+    "@turf/boolean-point-in-polygon": "^6.5.0",
     "commander": "^11.1.0",
     "cli-progress": "^3.12.0"
   },

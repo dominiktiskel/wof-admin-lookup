@@ -105,15 +105,21 @@ function calculateBBox(coords) {
     return '0,0,0,0';
   }
   
-  const lons = coords.map(c => c[0]);
-  const lats = coords.map(c => c[1]);
+  // Iteracyjne obliczanie min/max aby uniknąć "Maximum call stack size exceeded"
+  // dla dużych geometrii (spread operator nie działa dla >~100k elementów)
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
   
-  return [
-    Math.min(...lons),
-    Math.min(...lats),
-    Math.max(...lons),
-    Math.max(...lats)
-  ].join(',');
+  for (const coord of coords) {
+    if (coord[0] < minLon) minLon = coord[0];
+    if (coord[0] > maxLon) maxLon = coord[0];
+    if (coord[1] < minLat) minLat = coord[1];
+    if (coord[1] > maxLat) maxLat = coord[1];
+  }
+  
+  return [minLon, minLat, maxLon, maxLat].join(',');
 }
 
 /**

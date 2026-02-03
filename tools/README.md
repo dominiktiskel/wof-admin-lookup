@@ -196,17 +196,37 @@ Wygenerowane ID zaczynają się od `9xx` (np. `908123456789`) aby uniknąć koli
 
 **Bash (Linux/Mac):**
 ```bash
+# Polska (cały kraj)
 ./prepare-osm-hierarchical.sh -c poland
-# lub dla regionu:
+
+# Polska (region)
 ./prepare-osm-hierarchical.sh -c poland -r dolnoslaskie
+
+# Wielka Brytania (cały kraj)
+./prepare-osm-hierarchical.sh -c united-kingdom
+
+# Wielka Brytania (region)
+./prepare-osm-hierarchical.sh -c united-kingdom -r scotland
 ```
 
 **PowerShell (Windows):**
 ```powershell
+# Polska (cały kraj)
 .\prepare-osm-hierarchical.ps1 -Country poland
-# lub dla regionu:
+
+# Polska (region)
 .\prepare-osm-hierarchical.ps1 -Country poland -Region dolnoslaskie
+
+# Wielka Brytania (cały kraj)
+.\prepare-osm-hierarchical.ps1 -Country united-kingdom
+
+# Wielka Brytania (region)
+.\prepare-osm-hierarchical.ps1 -Country united-kingdom -Region scotland
 ```
+
+**⚠️ UWAGA dla Wielkiej Brytanii:**
+- Używaj `united-kingdom` jako nazwy kraju (NIE `great-britain`)
+- Dostępne regiony: `england`, `scotland`, `wales`
 
 ### Ręcznie krok po kroku:
 

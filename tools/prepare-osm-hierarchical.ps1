@@ -18,14 +18,27 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Map country names to Geofabrik directory names
+$GeofabrikCountry = $Country
+switch ($Country.ToLower()) {
+    "great-britain" { $GeofabrikCountry = "united-kingdom" }
+    "united-kingdom" { $GeofabrikCountry = "united-kingdom" }
+    "uk" { $GeofabrikCountry = "united-kingdom" }
+    { $_ -in @("england", "scotland", "wales") } {
+        Write-Host "Error: Use 'united-kingdom' as country and specify '$Country' as region" -ForegroundColor Red
+        Write-Host "Example: .\prepare-osm-hierarchical.ps1 -Country united-kingdom -Region $Country" -ForegroundColor Yellow
+        exit 1
+    }
+}
+
 # Określ obszar (region lub kraj) i skonstruuj URL
 if ($Region) {
     $Area = $Region
-    $PbfUrl = "http://download.geofabrik.de/europe/$Country/$Region-latest.osm.pbf"
+    $PbfUrl = "http://download.geofabrik.de/europe/$GeofabrikCountry/$Region-latest.osm.pbf"
     $AreaType = "Region"
 } else {
-    $Area = $Country
-    $PbfUrl = "http://download.geofabrik.de/europe/$Country-latest.osm.pbf"
+    $Area = $GeofabrikCountry
+    $PbfUrl = "http://download.geofabrik.de/europe/$GeofabrikCountry-latest.osm.pbf"
     $AreaType = "Country"
 }
 
@@ -168,7 +181,7 @@ try {
     # Map country names to ISO codes
     $CountryCode = switch ($Country.ToLower()) {
         "poland" { "PL" }
-        "great-britain" { "GB" }
+        { $_ -in @("great-britain", "united-kingdom", "uk", "england", "scotland", "wales") } { "GB" }
         "germany" { "DE" }
         "france" { "FR" }
         "spain" { "ES" }

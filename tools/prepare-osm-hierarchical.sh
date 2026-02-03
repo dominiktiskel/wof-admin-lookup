@@ -85,15 +85,28 @@ if [ -z "$COUNTRY" ]; then
     usage
 fi
 
+# Map country names to Geofabrik directory names
+GEOFABRIK_COUNTRY="$COUNTRY"
+case "${COUNTRY,,}" in
+    great-britain|united-kingdom|uk)
+        GEOFABRIK_COUNTRY="united-kingdom"
+        ;;
+    england|scotland|wales)
+        echo -e "${RED}Error: Use 'united-kingdom' as country and specify '${COUNTRY}' as region${NC}"
+        echo -e "${YELLOW}Example: $0 -c united-kingdom -r ${COUNTRY}${NC}"
+        exit 1
+        ;;
+esac
+
 # Określ obszar (region lub kraj) i skonstruuj URL
 GEOFABRIK_BASE="http://download.geofabrik.de/europe"
 if [ -n "$REGION" ]; then
     AREA="$REGION"
-    PBF_URL="${GEOFABRIK_BASE}/${COUNTRY}/${REGION}-latest.osm.pbf"
+    PBF_URL="${GEOFABRIK_BASE}/${GEOFABRIK_COUNTRY}/${REGION}-latest.osm.pbf"
     AREA_TYPE="Region"
 else
-    AREA="$COUNTRY"
-    PBF_URL="${GEOFABRIK_BASE}/${COUNTRY}-latest.osm.pbf"
+    AREA="$GEOFABRIK_COUNTRY"
+    PBF_URL="${GEOFABRIK_BASE}/${GEOFABRIK_COUNTRY}-latest.osm.pbf"
     AREA_TYPE="Country"
 fi
 
@@ -227,16 +240,7 @@ case "${COUNTRY,,}" in
     poland)
         COUNTRY_CODE="PL"
         ;;
-    great-britain)
-        COUNTRY_CODE="GB"
-        ;;
-    england)
-        COUNTRY_CODE="GB"
-        ;;
-    scotland)
-        COUNTRY_CODE="GB"
-        ;;
-    wales)
+    great-britain|united-kingdom|uk|england|scotland|wales)
         COUNTRY_CODE="GB"
         ;;
     germany)

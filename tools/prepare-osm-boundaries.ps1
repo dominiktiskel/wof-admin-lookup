@@ -153,10 +153,24 @@ if (-not (Test-Path (Join-Path $scriptDir "node_modules"))) {
 }
 
 try {
+    # Map country names to ISO codes
+    $CountryCode = switch ($Country.ToLower()) {
+        "poland" { "PL" }
+        "great-britain" { "GB" }
+        "england" { "GB" }
+        "scotland" { "GB" }
+        "wales" { "GB" }
+        "germany" { "DE" }
+        "france" { "FR" }
+        "spain" { "ES" }
+        "italy" { "IT" }
+        default { $Country.Substring(0, 2).ToUpper() }
+    }
+    
     & node (Join-Path $scriptDir "osm-to-wof-sqlite.js") `
         -i $GeoJsonFile `
         -o $SqliteFile `
-        --country PL
+        --country $CountryCode
     
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green

@@ -221,10 +221,46 @@ fi
 
 # Uruchom konwersję HIERARCHICZNĄ
 echo -e "${CYAN}      This may take a while - building complete hierarchy...${NC}"
+
+# Map country names to ISO codes
+case "${COUNTRY,,}" in
+    poland)
+        COUNTRY_CODE="PL"
+        ;;
+    great-britain)
+        COUNTRY_CODE="GB"
+        ;;
+    england)
+        COUNTRY_CODE="GB"
+        ;;
+    scotland)
+        COUNTRY_CODE="GB"
+        ;;
+    wales)
+        COUNTRY_CODE="GB"
+        ;;
+    germany)
+        COUNTRY_CODE="DE"
+        ;;
+    france)
+        COUNTRY_CODE="FR"
+        ;;
+    spain)
+        COUNTRY_CODE="ES"
+        ;;
+    italy)
+        COUNTRY_CODE="IT"
+        ;;
+    *)
+        # Default: take first 2 chars and uppercase
+        COUNTRY_CODE=$(echo "$COUNTRY" | cut -c1-2 | tr '[:lower:]' '[:upper:]')
+        ;;
+esac
+
 node "$SCRIPT_DIR/osm-to-wof-hierarchical.js" \
     -i "$GEOJSON_FILE" \
     -o "$SQLITE_FILE" \
-    --country PL
+    --country "$COUNTRY_CODE"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"

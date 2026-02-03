@@ -164,10 +164,22 @@ if (-not ($packageJson.dependencies.'@turf/boolean-point-in-polygon')) {
 
 try {
     Write-Host "      This may take a while - building complete hierarchy..." -ForegroundColor Cyan
+    
+    # Map country names to ISO codes
+    $CountryCode = switch ($Country.ToLower()) {
+        "poland" { "PL" }
+        "great-britain" { "GB" }
+        "germany" { "DE" }
+        "france" { "FR" }
+        "spain" { "ES" }
+        "italy" { "IT" }
+        default { $Country.Substring(0, 2).ToUpper() }
+    }
+    
     & node (Join-Path $scriptDir "osm-to-wof-hierarchical.js") `
         -i $GeoJsonFile `
         -o $SqliteFile `
-        --country PL
+        --country $CountryCode
     
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green

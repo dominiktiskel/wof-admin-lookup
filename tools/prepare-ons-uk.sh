@@ -98,56 +98,86 @@ if [ "$SKIP_DOWNLOAD" = true ]; then
 else
     # Check for curl or wget
     if command -v curl &> /dev/null; then
-        # Use HTTP/1.1 to avoid HTTP/2 protocol errors with large files
-        # Add retry logic and resume support for reliability
-        DOWNLOAD_CMD="curl --http1.1 --retry 5 --retry-delay 5 --retry-all-errors -C - -L -o"
+        HAS_CURL=true
     elif command -v wget &> /dev/null; then
-        # wget with retry and continue support
-        DOWNLOAD_CMD="wget --tries=5 --wait=5 -c -O"
+        HAS_CURL=false
     else
         echo -e "${RED}      ERROR: curl or wget not found!${NC}"
         exit 1
     fi
     
-    echo -e "${GRAY}      Using robust download with HTTP/1.1, retries and resume support${NC}"
+    # Robust download function with retry loop
+    download_file() {
+        local url="$1"
+        local output="$2"
+        local max_retries=10
+        local retry_delay=5
+        local attempt=1
+        
+        while [ $attempt -le $max_retries ]; do
+            echo -e "${GRAY}        Attempt $attempt/$max_retries...${NC}"
+            
+            if [ "$HAS_CURL" = true ]; then
+                # Use HTTP/1.1 to avoid HTTP/2 protocol errors
+                # -C - enables resume from partial download
+                if curl --http1.1 -C - -L -f -o "$output" "$url"; then
+                    return 0  # Success
+                fi
+            else
+                # wget with continue support
+                if wget -c -O "$output" "$url"; then
+                    return 0  # Success
+                fi
+            fi
+            
+            echo -e "${YELLOW}        Download interrupted, waiting ${retry_delay}s before retry...${NC}"
+            sleep $retry_delay
+            attempt=$((attempt + 1))
+        done
+        
+        echo -e "${RED}        Failed after $max_retries attempts${NC}"
+        return 1
+    }
+    
+    echo -e "${GRAY}      Using robust download with HTTP/1.1 and resume support${NC}"
     
     echo -e "${CYAN}      Downloading Countries (4 features)...${NC}"
-    if [ -f "$COUNTRIES_FILE" ]; then
+    if [ -f "$COUNTRIES_FILE" ] && [ -s "$COUNTRIES_FILE" ]; then
         echo -e "${GRAY}        File exists, skipping${NC}"
     else
-        $DOWNLOAD_CMD "$COUNTRIES_FILE" "$COUNTRIES_URL"
+        download_file "$COUNTRIES_URL" "$COUNTRIES_FILE"
         echo -e "${GREEN}        Downloaded: $COUNTRIES_FILE${NC}"
     fi
     
     echo -e "${CYAN}      Downloading Regions (~13 features)...${NC}"
-    if [ -f "$REGIONS_FILE" ]; then
+    if [ -f "$REGIONS_FILE" ] && [ -s "$REGIONS_FILE" ]; then
         echo -e "${GRAY}        File exists, skipping${NC}"
     else
-        $DOWNLOAD_CMD "$REGIONS_FILE" "$REGIONS_URL"
+        download_file "$REGIONS_URL" "$REGIONS_FILE"
         echo -e "${GREEN}        Downloaded: $REGIONS_FILE${NC}"
     fi
     
     echo -e "${CYAN}      Downloading Counties (~50 features)...${NC}"
-    if [ -f "$COUNTIES_FILE" ]; then
+    if [ -f "$COUNTIES_FILE" ] && [ -s "$COUNTIES_FILE" ]; then
         echo -e "${GRAY}        File exists, skipping${NC}"
     else
-        $DOWNLOAD_CMD "$COUNTIES_FILE" "$COUNTIES_URL"
+        download_file "$COUNTIES_URL" "$COUNTIES_FILE"
         echo -e "${GREEN}        Downloaded: $COUNTIES_FILE${NC}"
     fi
     
     echo -e "${CYAN}      Downloading Local Authority Districts (~380 features)...${NC}"
-    if [ -f "$LAD_FILE" ]; then
+    if [ -f "$LAD_FILE" ] && [ -s "$LAD_FILE" ]; then
         echo -e "${GRAY}        File exists, skipping${NC}"
     else
-        $DOWNLOAD_CMD "$LAD_FILE" "$LAD_URL"
+        download_file "$LAD_URL" "$LAD_FILE"
         echo -e "${GREEN}        Downloaded: $LAD_FILE${NC}"
     fi
     
     echo -e "${CYAN}      Downloading Built-up Areas (~8000 features, may take a while)...${NC}"
-    if [ -f "$BUA_FILE" ]; then
+    if [ -f "$BUA_FILE" ] && [ -s "$BUA_FILE" ]; then
         echo -e "${GRAY}        File exists, skipping${NC}"
     else
-        $DOWNLOAD_CMD "$BUA_FILE" "$BUA_URL"
+        download_file "$BUA_URL" "$BUA_FILE"
         echo -e "${GREEN}        Downloaded: $BUA_FILE${NC}"
     fi
 fi

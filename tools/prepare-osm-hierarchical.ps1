@@ -91,9 +91,9 @@ if (-not $SkipDownload) {
     Write-Host "[1/4] Skipping download (--SkipDownload)" -ForegroundColor Gray
 }
 
-# Krok 2: Filtruj granice administracyjne (WSZYSTKIE poziomy!)
+# Krok 2: Filtruj granice administracyjne + miejscowości (place=*)
 Write-Host ""
-Write-Host "[2/4] Filtering administrative boundaries (ALL levels 2-10)..." -ForegroundColor Yellow
+Write-Host "[2/4] Filtering administrative boundaries AND places..." -ForegroundColor Yellow
 
 $osmium = Get-Command osmium -ErrorAction SilentlyContinue
 if (-not $osmium) {
@@ -107,8 +107,17 @@ if (Test-Path $BoundariesPbf) {
     Write-Host "      File exists, skipping filter" -ForegroundColor Gray
 } else {
     try {
-        Write-Host "      Extracting admin_level 2,4,6,7,8,9,10" -ForegroundColor Cyan
-        & osmium tags-filter $PbfFile r/boundary=administrative -o $BoundariesPbf --overwrite
+        Write-Host "      Extracting:" -ForegroundColor Cyan
+        Write-Host "        - boundary=administrative (admin_level 2-10)" -ForegroundColor Cyan
+        Write-Host "        - place=city,town,village,hamlet,suburb,neighbourhood" -ForegroundColor Cyan
+        
+        # Filtruj zarówno granice administracyjne jak i miejscowości (place=*)
+        # W UK wiele miejscowości jest oznaczonych tylko jako place=*, nie jako boundary
+        & osmium tags-filter $PbfFile `
+            "r/boundary=administrative" `
+            "nw/place=city,town,village,hamlet,suburb,neighbourhood,quarter,isolated_dwelling" `
+            -o $BoundariesPbf --overwrite
+        
         Write-Host "      Filtered: $BoundariesPbf" -ForegroundColor Green
     } catch {
         Write-Host "      ERROR: osmium failed" -ForegroundColor Red
@@ -117,9 +126,9 @@ if (Test-Path $BoundariesPbf) {
     }
 }
 
-# Krok 3: Konwertuj do GeoJSON
+# Krok 3: Konwertuj do GeoJSON (polygony + punkty)
 Write-Host ""
-Write-Host "[3/4] Converting to GeoJSON..." -ForegroundColor Yellow
+Write-Host "[3/4] Converting to GeoJSON (polygons + points)..." -ForegroundColor Yellow
 
 $ogr2ogr = Get-Command ogr2ogr -ErrorAction SilentlyContinue
 if (-not $ogr2ogr) {
@@ -129,6 +138,9 @@ if (-not $ogr2ogr) {
     exit 1
 }
 
+$GeoJsonPolygons = Join-Path $OutputDir "$Area-boundaries-polygons.geojson"
+$GeoJsonPoints = Join-Path $OutputDir "$Area-boundaries-points.geojson"
+
 if ((Test-Path $GeoJsonFile) -and -not $SkipConvert) {
     Write-Host "      Removing existing GeoJSON..." -ForegroundColor Gray
     Remove-Item $GeoJsonFile -Force
@@ -136,10 +148,51 @@ if ((Test-Path $GeoJsonFile) -and -not $SkipConvert) {
 
 if (-not (Test-Path $GeoJsonFile)) {
     try {
-        & ogr2ogr -f GeoJSON `
-            $GeoJsonFile `
-            $BoundariesPbf `
-            multipolygons
+        Write-Host "      Converting multipolygons (boundary=administrative)..." -ForegroundColor Cyan
+        & ogr2ogr -f GeoJSON $GeoJsonPolygons $BoundariesPbf multipolygons 2>$null
+        
+        Write-Host "      Converting points (place=*)..." -ForegroundColor Cyan
+        & ogr2ogr -f GeoJSON $GeoJsonPoints $BoundariesPbf points 2>$null
+        
+        # Połącz oba pliki GeoJSON
+        Write-Host "      Merging polygons and points..." -ForegroundColor Cyan
+        
+        $hasPolygons = Test-Path $GeoJsonPolygons
+        $hasPoints = Test-Path $GeoJsonPoints
+        
+        if ($hasPolygons -and $hasPoints) {
+            # Oba pliki istnieją - połącz je
+            $polygons = Get-Content $GeoJsonPolygons -Raw | ConvertFrom-Json
+            $points = Get-Content $GeoJsonPoints -Raw | ConvertFrom-Json
+            
+            $merged = @{
+                type = "FeatureCollection"
+                features = @()
+            }
+            
+            if ($polygons.features) { $merged.features += $polygons.features }
+            if ($points.features) { $merged.features += $points.features }
+            
+            $merged | ConvertTo-Json -Depth 100 -Compress | Out-File $GeoJsonFile -Encoding UTF8
+            
+            $polyCount = if ($polygons.features) { $polygons.features.Count } else { 0 }
+            $pointCount = if ($points.features) { $points.features.Count } else { 0 }
+            Write-Host "      Merged: $polyCount polygons + $pointCount points" -ForegroundColor Green
+            
+        } elseif ($hasPolygons) {
+            Move-Item $GeoJsonPolygons $GeoJsonFile -Force
+            Write-Host "      Only polygons found (no points)" -ForegroundColor Yellow
+        } elseif ($hasPoints) {
+            Move-Item $GeoJsonPoints $GeoJsonFile -Force
+            Write-Host "      Only points found (no polygons)" -ForegroundColor Yellow
+        } else {
+            Write-Host "      ERROR: No features extracted!" -ForegroundColor Red
+            exit 1
+        }
+        
+        # Cleanup temp files
+        if (Test-Path $GeoJsonPolygons) { Remove-Item $GeoJsonPolygons -Force }
+        if (Test-Path $GeoJsonPoints) { Remove-Item $GeoJsonPoints -Force }
         
         $size = (Get-Item $GeoJsonFile).Length / 1MB
         Write-Host "      Created: $GeoJsonFile ($([math]::Round($size, 2)) MB)" -ForegroundColor Green

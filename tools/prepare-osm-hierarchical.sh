@@ -158,9 +158,9 @@ else
     echo -e "${GREEN}      Downloaded: $PBF_FILE${NC}"
 fi
 
-# Krok 2: Filtruj granice administracyjne (WSZYSTKIE poziomy!)
+# Krok 2: Filtruj granice administracyjne + miejscowości (place=*)
 echo ""
-echo -e "${YELLOW}[2/4] Filtering administrative boundaries (ALL levels 2-10)...${NC}"
+echo -e "${YELLOW}[2/4] Filtering administrative boundaries AND places...${NC}"
 
 if ! command -v osmium &> /dev/null; then
     echo -e "${RED}      ERROR: osmium-tool not found!${NC}"
@@ -172,14 +172,23 @@ fi
 if [ -f "$BOUNDARIES_PBF" ]; then
     echo -e "${GRAY}      File exists, skipping filter${NC}"
 else
-    echo -e "${CYAN}      Extracting admin_level 2,4,6,7,8,9,10${NC}"
-    osmium tags-filter "$PBF_FILE" r/boundary=administrative -o "$BOUNDARIES_PBF" --overwrite
+    echo -e "${CYAN}      Extracting:${NC}"
+    echo -e "${CYAN}        - boundary=administrative (admin_level 2-10)${NC}"
+    echo -e "${CYAN}        - place=city,town,village,hamlet,suburb,neighbourhood${NC}"
+    
+    # Filtruj zarówno granice administracyjne jak i miejscowości (place=*)
+    # W UK wiele miejscowości jest oznaczonych tylko jako place=*, nie jako boundary
+    osmium tags-filter "$PBF_FILE" \
+        r/boundary=administrative \
+        nw/place=city,town,village,hamlet,suburb,neighbourhood,quarter,isolated_dwelling \
+        -o "$BOUNDARIES_PBF" --overwrite
+    
     echo -e "${GREEN}      Filtered: $BOUNDARIES_PBF${NC}"
 fi
 
-# Krok 3: Konwertuj do GeoJSON
+# Krok 3: Konwertuj do GeoJSON (polygony + punkty)
 echo ""
-echo -e "${YELLOW}[3/4] Converting to GeoJSON...${NC}"
+echo -e "${YELLOW}[3/4] Converting to GeoJSON (polygons + points)...${NC}"
 
 if ! command -v ogr2ogr &> /dev/null; then
     echo -e "${RED}      ERROR: ogr2ogr (GDAL) not found!${NC}"
@@ -188,15 +197,56 @@ if ! command -v ogr2ogr &> /dev/null; then
     exit 1
 fi
 
+GEOJSON_POLYGONS="${OUTPUT_DIR}/${AREA}-boundaries-polygons.geojson"
+GEOJSON_POINTS="${OUTPUT_DIR}/${AREA}-boundaries-points.geojson"
+
 if [ "$SKIP_CONVERT" = true ]; then
     echo -e "${GRAY}      Skipping conversion (--skip-convert)${NC}"
 elif [ -f "$GEOJSON_FILE" ]; then
     echo -e "${GRAY}      File exists, skipping conversion${NC}"
 else
-    ogr2ogr -f GeoJSON \
-        "$GEOJSON_FILE" \
-        "$BOUNDARIES_PBF" \
-        multipolygons
+    echo -e "${CYAN}      Converting multipolygons (boundary=administrative)...${NC}"
+    ogr2ogr -f GeoJSON "$GEOJSON_POLYGONS" "$BOUNDARIES_PBF" multipolygons 2>/dev/null || true
+    
+    echo -e "${CYAN}      Converting points (place=*)...${NC}"
+    ogr2ogr -f GeoJSON "$GEOJSON_POINTS" "$BOUNDARIES_PBF" points 2>/dev/null || true
+    
+    # Połącz oba pliki GeoJSON
+    echo -e "${CYAN}      Merging polygons and points...${NC}"
+    
+    if [ -f "$GEOJSON_POLYGONS" ] && [ -f "$GEOJSON_POINTS" ]; then
+        # Oba pliki istnieją - połącz je
+        node -e "
+        const fs = require('fs');
+        const polygons = JSON.parse(fs.readFileSync('$GEOJSON_POLYGONS', 'utf8'));
+        const points = JSON.parse(fs.readFileSync('$GEOJSON_POINTS', 'utf8'));
+        
+        const merged = {
+            type: 'FeatureCollection',
+            features: [
+                ...(polygons.features || []),
+                ...(points.features || [])
+            ]
+        };
+        
+        fs.writeFileSync('$GEOJSON_FILE', JSON.stringify(merged));
+        console.log('Merged: ' + (polygons.features?.length || 0) + ' polygons + ' + (points.features?.length || 0) + ' points');
+        "
+    elif [ -f "$GEOJSON_POLYGONS" ]; then
+        # Tylko polygony
+        mv "$GEOJSON_POLYGONS" "$GEOJSON_FILE"
+        echo -e "${YELLOW}      Only polygons found (no points)${NC}"
+    elif [ -f "$GEOJSON_POINTS" ]; then
+        # Tylko punkty
+        mv "$GEOJSON_POINTS" "$GEOJSON_FILE"
+        echo -e "${YELLOW}      Only points found (no polygons)${NC}"
+    else
+        echo -e "${RED}      ERROR: No features extracted!${NC}"
+        exit 1
+    fi
+    
+    # Cleanup temp files
+    rm -f "$GEOJSON_POLYGONS" "$GEOJSON_POINTS"
     
     SIZE=$(du -h "$GEOJSON_FILE" | cut -f1)
     echo -e "${GREEN}      Created: $GEOJSON_FILE ($SIZE)${NC}"

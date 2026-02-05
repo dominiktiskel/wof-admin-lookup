@@ -31,11 +31,25 @@ const cliProgress = require('cli-progress');
 const ADMIN_LEVEL_TO_PLACETYPE = {
   '2': 'country',
   '4': 'region',
+  '5': 'region',      // UK regions (e.g., South East England)
   '6': 'county',
   '7': 'localadmin',
   '8': 'locality',
   '9': 'borough',
   '10': 'neighbourhood'
+};
+
+// Mapowanie place=* OSM na placetype WOF
+// Używane gdy feature nie ma admin_level (np. place=city bez boundary=administrative)
+const PLACE_TO_PLACETYPE = {
+  'city': 'locality',
+  'town': 'locality',
+  'village': 'locality',
+  'hamlet': 'locality',
+  'isolated_dwelling': 'locality',
+  'suburb': 'neighbourhood',
+  'neighbourhood': 'neighbourhood',
+  'quarter': 'neighbourhood'
 };
 
 // Hierarchia poziomów (od najwyższego do najniższego)
@@ -291,16 +305,49 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     const feature = features[i];
     const props = feature.properties || {};
     
-    const adminLevel = props.admin_level || props['admin_level'] || '8';
-    const placetype = ADMIN_LEVEL_TO_PLACETYPE[adminLevel];
+    // Określ placetype - najpierw z admin_level, potem z place=*
+    const adminLevel = props.admin_level || props['admin_level'];
+    const placeTag = props.place || props['place'];
+    
+    let placetype = null;
+    let effectiveAdminLevel = adminLevel;
+    
+    if (adminLevel && ADMIN_LEVEL_TO_PLACETYPE[adminLevel]) {
+      // Ma admin_level - użyj mapowania admin_level
+      placetype = ADMIN_LEVEL_TO_PLACETYPE[adminLevel];
+    } else if (placeTag && PLACE_TO_PLACETYPE[placeTag]) {
+      // Nie ma admin_level ale ma place=* - użyj mapowania place
+      placetype = PLACE_TO_PLACETYPE[placeTag];
+      // Przypisz pseudo admin_level na podstawie placetype (dla generateWofId)
+      effectiveAdminLevel = placetype === 'locality' ? '8' : '10';
+    }
     
     if (!placetype) {
       stats.skipped++;
-      progressBar1.update(i + 1, { status: `Skipped (unknown level ${adminLevel})` });
+      const reason = adminLevel ? `unknown level ${adminLevel}` : (placeTag ? `unknown place ${placeTag}` : 'no admin_level/place');
+      progressBar1.update(i + 1, { status: `Skipped (${reason})` });
       continue;
     }
     
     let geometry = feature.geometry;
+    
+    // Dla punktów (place=*) stwórz minimalny polygon wokół punktu
+    if (geometry && geometry.type === 'Point') {
+      const [lon, lat] = geometry.coordinates;
+      // Stwórz mały kwadrat ~100m wokół punktu (0.001° ≈ 100m)
+      const offset = 0.001;
+      geometry = {
+        type: 'Polygon',
+        coordinates: [[
+          [lon - offset, lat - offset],
+          [lon + offset, lat - offset],
+          [lon + offset, lat + offset],
+          [lon - offset, lat + offset],
+          [lon - offset, lat - offset]
+        ]]
+      };
+    }
+    
     if (!isValidGeometry(geometry)) {
       stats.skipped++;
       progressBar1.update(i + 1, { status: 'Skipped (invalid geometry)' });
@@ -308,6 +355,7 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     }
     
     const name = props.name || 
+                 props['name:en'] ||
                  props['name:pl'] || 
                  props['official_name'] ||
                  props['alt_name'] ||
@@ -331,7 +379,7 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
                   props.id ||
                   `osm_${i}`;
     
-    const wofId = generateWofId(osmId, adminLevel);
+    const wofId = generateWofId(osmId, effectiveAdminLevel || '8');
     
     const population = parseInt(props.population) || null;
     const wikidata = props.wikidata || props['wikidata'] || null;
@@ -342,7 +390,8 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
       osmId,
       name,
       placetype,
-      adminLevel,
+      adminLevel: effectiveAdminLevel || '8',
+      placeTag,  // Zachowaj oryginalny tag place=*
       centroid,
       bbox,
       area,

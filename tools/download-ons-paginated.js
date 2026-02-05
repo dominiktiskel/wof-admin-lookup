@@ -10,6 +10,14 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
+// Ensure directory exists for output file
+function ensureDirectoryExists(filePath) {
+    const dir = path.dirname(filePath);
+    if (dir && dir !== '.' && !fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+}
+
 // Dataset configurations
 const DATASETS = {
     countries: {
@@ -271,6 +279,7 @@ async function downloadDataset(datasetKey, outputFile) {
                 console.log(` ${colors.green}${features.length} features (total: ${allFeatures.length})${colors.reset}`);
                 
                 // Save progress after each page
+                ensureDirectoryExists(progressFile);
                 fs.writeFileSync(progressFile, JSON.stringify({
                     offset: offset + pageSize,
                     features: allFeatures
@@ -296,7 +305,9 @@ async function downloadDataset(datasetKey, outputFile) {
     };
     
     log('cyan', `    Writing ${allFeatures.length} features to ${outputFile}...`);
+    ensureDirectoryExists(outputFile);
     fs.writeFileSync(outputFile, JSON.stringify(geojson));
+    log('green', `    File saved successfully.`);
     
     // Clean up progress file
     if (fs.existsSync(progressFile)) {

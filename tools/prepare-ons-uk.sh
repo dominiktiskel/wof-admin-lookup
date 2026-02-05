@@ -98,13 +98,18 @@ if [ "$SKIP_DOWNLOAD" = true ]; then
 else
     # Check for curl or wget
     if command -v curl &> /dev/null; then
-        DOWNLOAD_CMD="curl -L -o"
+        # Use HTTP/1.1 to avoid HTTP/2 protocol errors with large files
+        # Add retry logic and resume support for reliability
+        DOWNLOAD_CMD="curl --http1.1 --retry 5 --retry-delay 5 --retry-all-errors -C - -L -o"
     elif command -v wget &> /dev/null; then
-        DOWNLOAD_CMD="wget -O"
+        # wget with retry and continue support
+        DOWNLOAD_CMD="wget --tries=5 --wait=5 -c -O"
     else
         echo -e "${RED}      ERROR: curl or wget not found!${NC}"
         exit 1
     fi
+    
+    echo -e "${GRAY}      Using robust download with HTTP/1.1, retries and resume support${NC}"
     
     echo -e "${CYAN}      Downloading Countries (4 features)...${NC}"
     if [ -f "$COUNTRIES_FILE" ]; then

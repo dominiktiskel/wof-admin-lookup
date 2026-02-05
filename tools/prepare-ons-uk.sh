@@ -88,7 +88,7 @@ COUNTRIES_URL="https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/service
 REGIONS_URL="https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Regions_December_2023_Boundaries_EN_BFC/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson"
 COUNTIES_URL="https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Counties_and_Unitary_Authorities_December_2023_Boundaries_UK_BFC/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson"
 LAD_URL="https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Local_Authority_Districts_May_2024_Boundaries_UK_BFC/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson"
-BUA_URL="https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Built_Up_Areas_December_2022_Boundaries_GB_BFC/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson"
+BUA_URL="https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/BUA_2022_GB/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson"
 
 # Step 1: Download ONS data
 echo -e "${YELLOW}[1/3] Downloading ONS administrative boundaries...${NC}"

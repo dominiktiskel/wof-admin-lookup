@@ -34,7 +34,7 @@ usage() {
     echo ""
     echo "Data sources (all under Open Government Licence):"
     echo "  - Countries (4 features)"
-    echo "  - Regions (13 features)"
+    echo "  - Regions (9 features - England only)"
     echo "  - Counties (218 features)"
     echo "  - Local Authority Districts (361 features)"
     echo "  - Built-up Areas (8545 features)"
@@ -73,7 +73,6 @@ REGIONS_FILE="${OUTPUT_DIR}/ons-regions.geojson"
 COUNTIES_FILE="${OUTPUT_DIR}/ons-counties.geojson"
 LAD_FILE="${OUTPUT_DIR}/ons-lad.geojson"
 BUA_FILE="${OUTPUT_DIR}/ons-bua.geojson"
-MERGED_FILE="${OUTPUT_DIR}/ons-uk-merged.geojson"
 SQLITE_FILE="${OUTPUT_DIR}/whosonfirst-data-ons-uk.db"
 
 echo ""
@@ -118,7 +117,7 @@ else
         node "$DOWNLOAD_SCRIPT" countries "$COUNTRIES_FILE"
     fi
     
-    echo -e "${CYAN}      [2/5] Regions (~13 features)...${NC}"
+    echo -e "${CYAN}      [2/5] Regions (9 features - England only)...${NC}"
     if [ -f "$REGIONS_FILE" ] && [ -s "$REGIONS_FILE" ]; then
         echo -e "${GRAY}            File exists, skipping${NC}"
     else
@@ -147,57 +146,29 @@ else
     fi
 fi
 
-# Step 2: Merge GeoJSON files
+# Step 2: Verify downloaded files
 echo ""
-echo -e "${YELLOW}[2/3] Merging GeoJSON files...${NC}"
-
-if [ -f "$MERGED_FILE" ]; then
-    echo -e "${GRAY}      Removing existing merged file${NC}"
-    rm -f "$MERGED_FILE"
-fi
+echo -e "${YELLOW}[2/3] Verifying downloaded files...${NC}"
 
 # Check if all source files exist
+MISSING_FILES=false
 for file in "$COUNTRIES_FILE" "$REGIONS_FILE" "$COUNTIES_FILE" "$LAD_FILE" "$BUA_FILE"; do
     if [ ! -f "$file" ]; then
         echo -e "${RED}      ERROR: Missing file: $file${NC}"
-        exit 1
+        MISSING_FILES=true
+    elif [ ! -s "$file" ]; then
+        echo -e "${RED}      ERROR: Empty file: $file${NC}"
+        MISSING_FILES=true
+    else
+        SIZE=$(du -h "$file" | cut -f1)
+        echo -e "${GREEN}      ✓ ${NC}$(basename $file) ($SIZE)"
     fi
 done
 
-# Merge using Node.js (jq would be alternative but Node is already required)
-echo -e "${CYAN}      Merging 5 GeoJSON files...${NC}"
-
-node -e "
-const fs = require('fs');
-
-const files = [
-    '$COUNTRIES_FILE',
-    '$REGIONS_FILE',
-    '$COUNTIES_FILE',
-    '$LAD_FILE',
-    '$BUA_FILE'
-];
-
-const merged = {
-    type: 'FeatureCollection',
-    features: []
-};
-
-let totalFeatures = 0;
-
-for (const file of files) {
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const features = data.features || [];
-    merged.features.push(...features);
-    console.log('  Loaded ' + file.split('/').pop() + ': ' + features.length + ' features');
-    totalFeatures += features.length;
-}
-
-fs.writeFileSync('$MERGED_FILE', JSON.stringify(merged));
-console.log('  Total features: ' + totalFeatures);
-"
-
-echo -e "${GREEN}      Created: $MERGED_FILE${NC}"
+if [ "$MISSING_FILES" = true ]; then
+    echo -e "${RED}      Some files are missing. Run without --skip-download to download them.${NC}"
+    exit 1
+fi
 
 # Step 3: Convert to WOF SQLite
 echo ""
@@ -211,11 +182,13 @@ if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
     cd - > /dev/null
 fi
 
-# Run converter
-echo -e "${CYAN}      This may take a while - processing ~8500 features...${NC}"
+# Run converter with multiple input files (no merge needed)
+echo -e "${CYAN}      This may take 10-20 minutes - processing ~9000 features...${NC}"
+
+INPUT_FILES="${COUNTRIES_FILE},${REGIONS_FILE},${COUNTIES_FILE},${LAD_FILE},${BUA_FILE}"
 
 node "$SCRIPT_DIR/ons-to-wof-sqlite.js" \
-    -i "$MERGED_FILE" \
+    -i "$INPUT_FILES" \
     -o "$SQLITE_FILE"
 
 echo ""
@@ -237,5 +210,5 @@ echo -e "  ${BLUE}3. Restart Pelias import:${NC}"
 echo -e "${GRAY}     cd /pelias/projects/united-kingdom${NC}"
 echo -e "${GRAY}     pelias import osm${NC}"
 echo ""
-echo -e "${GREEN}This database provides ~8000 proper locality boundaries!${NC}"
+echo -e "${GREEN}This database provides ~9000 UK admin boundaries (incl. 8500+ localities)!${NC}"
 echo ""

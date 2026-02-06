@@ -51,10 +51,11 @@ const ONS_CODE_TO_PLACETYPE = {
   'S12': 'localadmin',  // Scottish Council Area
   'N09': 'localadmin',  // Northern Ireland District
   
-  // Built-up Area: E34 (England), W37 (Wales), S02 (Scotland)
-  'E34': 'locality',
-  'W37': 'locality',
-  'S02': 'locality'
+  // Built-up Area (BUA 2022): E63 (England), W45 (Wales), S45 (Scotland), K08 (cross-border)
+  'E63': 'locality',
+  'W45': 'locality',
+  'S45': 'locality',
+  'K08': 'locality'
 };
 
 // Hierarchia poziomów (od najwyższego do najniższego)
@@ -297,40 +298,72 @@ function buildHierarchy(featureData, allFeatures) {
 }
 
 /**
+ * Load features from a single GeoJSON file
+ */
+function loadFeaturesFromFile(filePath) {
+  log('blue', `📂 Reading: ${filePath}`);
+  
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const geojson = JSON.parse(content);
+    
+    let features = [];
+    if (geojson.type === 'FeatureCollection') {
+      features = geojson.features || [];
+    } else if (geojson.type === 'Feature') {
+      features = [geojson];
+    } else if (Array.isArray(geojson)) {
+      features = geojson;
+    }
+    
+    log('blue', `   Found ${features.length} features`);
+    return features;
+  } catch (e) {
+    log('red', `❌ Error parsing ${filePath}: ${e.message}`);
+    return [];
+  }
+}
+
+/**
  * Główna funkcja konwersji
  */
 function convertOnsToWofSqlite(inputPath, outputPath) {
   log('cyan', '\n🇬🇧  ONS to WOF SQLite Converter');
   log('cyan', '=====================================\n');
   
-  if (!fs.existsSync(inputPath)) {
-    log('red', `❌ Error: Input file not found: ${inputPath}`);
-    process.exit(1);
+  // Handle multiple input files (comma-separated or glob pattern)
+  let inputFiles = [];
+  
+  if (inputPath.includes(',')) {
+    // Comma-separated list
+    inputFiles = inputPath.split(',').map(f => f.trim());
+  } else if (inputPath.includes('*')) {
+    // Glob pattern
+    const glob = require('glob');
+    inputFiles = glob.sync(inputPath);
+  } else {
+    // Single file
+    inputFiles = [inputPath];
   }
   
-  log('blue', `📂 Reading GeoJSON: ${inputPath}`);
-  
-  // Wczytaj GeoJSON
-  let geojson;
-  try {
-    const content = fs.readFileSync(inputPath, 'utf8');
-    geojson = JSON.parse(content);
-  } catch (e) {
-    log('red', `❌ Error parsing GeoJSON: ${e.message}`);
-    process.exit(1);
+  // Verify all files exist
+  for (const file of inputFiles) {
+    if (!fs.existsSync(file)) {
+      log('red', `❌ Error: Input file not found: ${file}`);
+      process.exit(1);
+    }
   }
   
-  // Obsługa różnych formatów
+  log('blue', `📂 Loading ${inputFiles.length} GeoJSON file(s)...\n`);
+  
+  // Load features from all files
   let features = [];
-  if (geojson.type === 'FeatureCollection') {
-    features = geojson.features || [];
-  } else if (geojson.type === 'Feature') {
-    features = [geojson];
-  } else if (Array.isArray(geojson)) {
-    features = geojson;
+  for (const file of inputFiles) {
+    const fileFeatures = loadFeaturesFromFile(file);
+    features = features.concat(fileFeatures);
   }
   
-  log('blue', `📊 Found ${features.length} features in GeoJSON\n`);
+  log('blue', `\n📊 Total: ${features.length} features from ${inputFiles.length} file(s)\n`);
   
   // PASS 1: Przetwórz wszystkie features (bez hierarchii)
   log('magenta', '🔄 PASS 1: Processing features...');

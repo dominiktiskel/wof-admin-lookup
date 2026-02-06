@@ -19,15 +19,19 @@ function ensureDirectoryExists(filePath) {
 }
 
 // Dataset configurations
+// Note: Countries and Regions use BUC (Ultra Generalised) versions for faster/reliable download
+// The simplified geometries are sufficient for geocoding (point-in-polygon lookups)
 const DATASETS = {
     countries: {
-        name: 'Countries',
-        url: 'https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Countries_December_2023_Boundaries_UK_BFC/FeatureServer/0/query',
+        name: 'Countries (simplified)',
+        // BUC = Ultra Generalised, much smaller file (~500KB vs 120MB)
+        url: 'https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Countries_December_2023_Boundaries_UK_BUC/FeatureServer/0/query',
         pageSize: 10
     },
     regions: {
-        name: 'Regions', 
-        url: 'https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Regions_December_2023_Boundaries_EN_BFC/FeatureServer/0/query',
+        name: 'Regions (simplified)', 
+        // BUC = Ultra Generalised, much smaller file (~180KB vs 57MB)
+        url: 'https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Regions_December_2023_Boundaries_EN_BUC/FeatureServer/0/query',
         pageSize: 10
     },
     counties: {

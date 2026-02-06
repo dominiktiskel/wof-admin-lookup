@@ -11,6 +11,3 @@ coverage/
 # Output directories for generated WOF databases
 tools/ign-spain/output/
 tools/ons-uk/output/
-
-# Downloaded boundary data
-tools/ons-uk/data/

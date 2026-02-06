@@ -144,34 +144,11 @@ else
     else
         node "$DOWNLOAD_SCRIPT" bua "$BUA_FILE"
     fi
-    
-    # Download Greater London boundary from OpenStreetMap
-    echo ""
-    echo -e "${CYAN}      [6/6] Greater London boundary (OSM relation 175342)...${NC}"
-    LONDON_BOUNDARY_FILE="$SCRIPT_DIR/data/greater-london.geojson"
-    mkdir -p "$SCRIPT_DIR/data"
-    
-    if [ -f "$LONDON_BOUNDARY_FILE" ] && [ -s "$LONDON_BOUNDARY_FILE" ]; then
-        echo -e "${GRAY}            File exists, skipping${NC}"
-    else
-        echo -e "${GRAY}            Downloading from Nominatim...${NC}"
-        curl -s "https://nominatim.openstreetmap.org/lookup?osm_ids=R175342&format=geojson&polygon_geojson=1" \
-            -H "User-Agent: Pelias-WOF-Tools/1.0" \
-            -o "$LONDON_BOUNDARY_FILE"
-        
-        if [ -s "$LONDON_BOUNDARY_FILE" ]; then
-            SIZE=$(du -h "$LONDON_BOUNDARY_FILE" | cut -f1)
-            echo -e "${GREEN}            ✓ Downloaded ${NC}($SIZE)"
-        else
-            echo -e "${RED}            ERROR: Failed to download Greater London boundary${NC}"
-            echo -e "${YELLOW}            This boundary is needed for synthetic London locality${NC}"
-        fi
-    fi
 fi
 
 # Step 2: Verify downloaded files
 echo ""
-echo -e "${YELLOW}[2/4] Verifying downloaded files...${NC}"
+echo -e "${YELLOW}[2/3] Verifying downloaded files...${NC}"
 
 # Check if all source files exist
 MISSING_FILES=false
@@ -193,22 +170,9 @@ if [ "$MISSING_FILES" = true ]; then
     exit 1
 fi
 
-# Step 3: Verify Greater London boundary
+# Step 3: Convert to WOF SQLite
 echo ""
-echo -e "${YELLOW}[3/4] Verifying Greater London boundary...${NC}"
-
-LONDON_BOUNDARY_FILE="$SCRIPT_DIR/data/greater-london.geojson"
-if [ -f "$LONDON_BOUNDARY_FILE" ] && [ -s "$LONDON_BOUNDARY_FILE" ]; then
-    SIZE=$(du -h "$LONDON_BOUNDARY_FILE" | cut -f1)
-    echo -e "${GREEN}      ✓ ${NC}Greater London boundary from OSM ($SIZE)"
-else
-    echo -e "${YELLOW}      ⚠ Greater London boundary not found${NC}"
-    echo -e "${GRAY}        Will create synthetic London without official boundary${NC}"
-fi
-
-# Step 4: Convert to WOF SQLite
-echo ""
-echo -e "${YELLOW}[4/4] Converting to WOF SQLite format...${NC}"
+echo -e "${YELLOW}[3/3] Converting to WOF SQLite format...${NC}"
 
 # Check if node_modules exists (in parent tools directory)
 if [ ! -d "$SCRIPT_DIR/../node_modules" ]; then

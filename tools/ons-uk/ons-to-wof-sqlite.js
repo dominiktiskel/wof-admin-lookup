@@ -199,38 +199,6 @@ function calculateAggregatedBBox(features) {
 }
 
 /**
- * Ładuje Greater London boundary z pliku OSM
- * Używa oficjalnego boundary z OpenStreetMap (relation 175342)
- */
-function loadGreaterLondonGeometry() {
-  const londonBoundaryFile = path.join(__dirname, 'data', 'greater-london.geojson');
-  
-  if (!fs.existsSync(londonBoundaryFile)) {
-    log('yellow', '   ⚠️  Greater London boundary file not found');
-    log('yellow', '   Run: curl "https://nominatim.openstreetmap.org/lookup?osm_ids=R175342&format=geojson&polygon_geojson=1" -o data/greater-london.geojson');
-    return null;
-  }
-  
-  try {
-    const geojson = JSON.parse(fs.readFileSync(londonBoundaryFile, 'utf8'));
-    
-    if (geojson.type === 'FeatureCollection' && geojson.features && geojson.features.length > 0) {
-      return geojson.features[0].geometry;
-    } else if (geojson.type === 'Feature') {
-      return geojson.geometry;
-    } else if (geojson.type === 'Polygon' || geojson.type === 'MultiPolygon') {
-      return geojson;
-    }
-    
-    log('yellow', '   ⚠️  Invalid GeoJSON format in Greater London boundary file');
-    return null;
-  } catch (e) {
-    log('red', `   ❌ Error loading Greater London boundary: ${e.message}`);
-    return null;
-  }
-}
-
-/**
  * Waliduje geometrię
  */
 function isValidGeometry(geometry) {
@@ -562,36 +530,31 @@ function convertOnsToWofSqlite(inputPath, outputPath) {
     const londonBBox = calculateAggregatedBBox(londonBoroughs);
     const londonArea = londonBoroughs.reduce((sum, b) => sum + b.area, 0);
     
-    // Load official Greater London boundary from OSM (relation 175342)
-    const londonGeometry = loadGreaterLondonGeometry();
+    // Use special WOF ID for synthetic London (999999999)
+    // NOTE: geometry is null - synthetic London is NOT used for Point-in-Polygon lookup
+    // It exists only in spr/ancestors tables to provide locality in hierarchy
+    // Boroughs (localadmin) will be found via PiP, London via hierarchy
+    const syntheticLondon = {
+      wofId: 999999999,
+      onsCode: 'SYNTHETIC_LONDON',
+      name: 'London',
+      placetype: 'locality',
+      centroid: londonCentroid,
+      bbox: londonBBox,
+      area: londonArea,
+      geometry: null, // No geometry - not used for PiP, only for hierarchy
+      nameEn: null,
+      isSynthetic: true
+    };
     
-    if (!londonGeometry) {
-      log('red', '   ❌ Cannot create synthetic London without geometry');
-      log('yellow', '   Skipping synthetic London creation\n');
-    } else {
-      // Use special WOF ID for synthetic London (999999999)
-      const syntheticLondon = {
-        wofId: 999999999,
-        onsCode: 'SYNTHETIC_LONDON',
-        name: 'London',
-        placetype: 'locality',
-        centroid: londonCentroid,
-        bbox: londonBBox,
-        area: londonArea,
-        geometry: londonGeometry, // Official boundary from OSM
-        nameEn: null,
-        isSynthetic: true
-      };
+    processedFeatures.push(syntheticLondon);
+    stats.processed++;
+    stats.byPlacetype['locality'] = (stats.byPlacetype['locality'] || 0) + 1;
     
-      processedFeatures.push(syntheticLondon);
-      stats.processed++;
-      stats.byPlacetype['locality'] = (stats.byPlacetype['locality'] || 0) + 1;
-      
-      log('green', `   ✅ Created synthetic London locality from ${londonBoroughs.length} boroughs`);
-      log('blue', `   📍 Centroid: ${londonCentroid.lat.toFixed(4)}, ${londonCentroid.lon.toFixed(4)}`);
-      log('blue', `   📏 Area: ${londonArea.toFixed(2)} km²`);
-      log('blue', `   🗺️  Geometry: ${londonGeometry.type} from OSM relation 175342\n`);
-    }
+    log('green', `   ✅ Created synthetic London locality from ${londonBoroughs.length} boroughs`);
+    log('blue', `   📍 Centroid: ${londonCentroid.lat.toFixed(4)}, ${londonCentroid.lon.toFixed(4)}`);
+    log('blue', `   📏 Area: ${londonArea.toFixed(2)} km²`);
+    log('blue', `   🔗 Hierarchy only (no PiP geometry) - allows boroughs to be found via PiP\n`);
   } else {
     log('yellow', '   ⚠️  No London Boroughs found, skipping synthetic London creation\n');
   }
@@ -765,7 +728,12 @@ function convertOnsToWofSqlite(inputPath, outputPath) {
       const maxLat = bboxParts[3] || 0;
       
       // Insert geojson
-      insertGeojson.run(fd.wofId, JSON.stringify(wofRecord));
+      // SKIP synthetic London - it should NOT be in geojson table for Point-in-Polygon
+      // London will be available only through hierarchy (ancestors table)
+      // This allows boroughs (localadmin) to be found via PiP, while London is returned via hierarchy
+      if (!fd.isSynthetic) {
+        insertGeojson.run(fd.wofId, JSON.stringify(wofRecord));
+      }
       
       // Insert SPR
       const countryValue = fd.placetype === 'country' ? '' : 'GB';

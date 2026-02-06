@@ -7,3 +7,7 @@ data/
 Thumbs.db
 coverage/
 .nyc_output/
+
+# Output directories for generated WOF databases
+tools/ign-spain/output/
+tools/ons-uk/output/

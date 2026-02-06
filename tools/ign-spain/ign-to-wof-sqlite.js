@@ -165,14 +165,28 @@ function determinePlacetype(ineCode, nationalLevel) {
   
   // Use nationalLevel from IGN API if available
   if (nationalLevel) {
-    switch(nationalLevel) {
+    // IGN API returns URLs like: https://inspire.ec.europa.eu/codelist/AdministrativeHierarchyLevel/1stOrder
+    // Extract the order part from the URL
+    let orderValue = nationalLevel;
+    if (nationalLevel.includes('/')) {
+      const parts = nationalLevel.split('/');
+      orderValue = parts[parts.length - 1];
+    }
+    
+    // Match against the correct hierarchy
+    switch(orderValue) {
+      case '1stOrder':
       case '1st order':
         return 'country';
+      case '2ndOrder':
       case '2nd order':
         return 'region';  // Comunidad Autónoma
+      case '3rdOrder':
       case '3rd order':
         return 'county';  // Provincia
-      case '6th order':
+      case '4thOrder':
+      case '4th order':
+      case '6th order':  // Keep backward compatibility
         return 'localadmin';  // Municipio
     }
   }
@@ -196,7 +210,8 @@ function determinePlacetype(ineCode, nationalLevel) {
  */
 function extractIneCode(props) {
   // Try various field names that IGN might use
-  return props.nationalCode ||
+  return props.nationalcode ||  // IGN API uses lowercase
+         props.nationalCode ||
          props.NATCODE ||
          props.codigo ||
          props.code ||
@@ -211,7 +226,8 @@ function extractIneCode(props) {
  * Extract name from properties
  */
 function extractName(props) {
-  return props.name ||
+  return props.nameunit ||  // IGN API uses lowercase
+         props.name ||
          props.NAMEUNIT ||
          props.nameUnit ||
          props.nombre ||
@@ -224,7 +240,8 @@ function extractName(props) {
  * Extract national level from properties
  */
 function extractNationalLevel(props) {
-  return props.nationalLevel ||
+  return props.nationallevel ||  // IGN API uses lowercase
+         props.nationalLevel ||
          props.NATIONALLEVEL ||
          props.nivel ||
          null;

@@ -41,6 +41,23 @@ cd tools\ons-uk
 
 `whosonfirst-data-ons-uk.db` - SQLite database compatible with Pelias WOF admin lookup
 
+## Special Handling: London
+
+The ONS data contains 33 London Boroughs (E09 codes) but lacks a unified "Greater London" Built-up Area. To ensure Pelias returns "London" in the `locality` field for all London addresses (instead of individual borough names), the conversion process:
+
+1. **Creates a synthetic "London" locality** - A special feature (WOF ID: 999999999) representing London as a whole, with centroid and bbox calculated from all 33 boroughs
+2. **Links all London Boroughs to "London"** - Each borough's hierarchy includes `locality_id` pointing to the synthetic London
+3. **Filters duplicate BUA** - Skips Built-up Area features that duplicate London Borough names (e.g., "Kensington and Chelsea" as both localadmin and locality)
+
+**Result**: Places in London correctly show:
+- `localadmin`: Borough name (e.g., "Kensington and Chelsea")
+- `locality`: "London"
+
+You can verify this with:
+```bash
+node check-london.js
+```
+
 ## License
 
 Data: Open Government Licence v3.0  

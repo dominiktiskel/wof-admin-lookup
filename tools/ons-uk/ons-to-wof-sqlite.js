@@ -154,6 +154,51 @@ function calculateArea(geometry) {
 }
 
 /**
+ * Oblicza zagregowany centroid z wielu features
+ * Używane dla syntetycznego Londynu
+ */
+function calculateAggregatedCentroid(features) {
+  if (!features || features.length === 0) {
+    return { lat: 0, lon: 0 };
+  }
+  
+  const sumLat = features.reduce((sum, f) => sum + f.centroid.lat, 0);
+  const sumLon = features.reduce((sum, f) => sum + f.centroid.lon, 0);
+  
+  return {
+    lat: sumLat / features.length,
+    lon: sumLon / features.length
+  };
+}
+
+/**
+ * Oblicza zagregowany bounding box z wielu features
+ * Używane dla syntetycznego Londynu
+ */
+function calculateAggregatedBBox(features) {
+  if (!features || features.length === 0) {
+    return '0,0,0,0';
+  }
+  
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+  
+  for (const f of features) {
+    const bbox = f.bbox.split(',').map(parseFloat);
+    const [bMinLon, bMinLat, bMaxLon, bMaxLat] = bbox;
+    
+    if (bMinLat < minLat) minLat = bMinLat;
+    if (bMaxLat > maxLat) maxLat = bMaxLat;
+    if (bMinLon < minLon) minLon = bMinLon;
+    if (bMaxLon > maxLon) maxLon = bMaxLon;
+  }
+  
+  return [minLon, minLat, maxLon, maxLat].join(',');
+}
+
+/**
  * Waliduje geometrię
  */
 function isValidGeometry(geometry) {
@@ -235,8 +280,12 @@ function findParent(centroid, placetype, potentialParents) {
   
   const parentPlacetype = HIERARCHY_ORDER[placetypeIndex - 1];
   
-  // Filtruj tylko odpowiednie placetype
-  const candidates = potentialParents.filter(p => p.placetype === parentPlacetype);
+  // Filtruj tylko odpowiednie placetype i pomiń syntetyczne features bez geometry
+  const candidates = potentialParents.filter(p => 
+    p.placetype === parentPlacetype && 
+    p.geometry !== null && 
+    !p.isSynthetic
+  );
   
   if (candidates.length === 0) return null;
   
@@ -275,6 +324,18 @@ function buildHierarchy(featureData, allFeatures) {
   
   // Ustaw własny ID
   hierarchy[`${featureData.placetype}_id`] = featureData.wofId;
+  
+  // Special case: London Boroughs (E09) should have "London" as locality
+  // This ensures Pelias returns "London" instead of borough names in locality field
+  if (featureData.placetype === 'localadmin' && featureData.onsCode.startsWith('E09')) {
+    const londonLocality = allFeatures.find(f => 
+      f.onsCode === 'SYNTHETIC_LONDON'
+    );
+    
+    if (londonLocality) {
+      hierarchy.locality_id = londonLocality.wofId;
+    }
+  }
   
   // Iteruj w górę hierarchii
   let currentFeature = featureData;
@@ -413,6 +474,23 @@ function convertOnsToWofSqlite(inputPath, outputPath) {
       continue;
     }
     
+    // Skip BUA features that duplicate London Borough names
+    // London Boroughs (E09) are already mapped as localadmin, 
+    // we don't want duplicate locality entries for them
+    if (placetype === 'locality' && onsCode.startsWith('E63')) {
+      const isDuplicateLondonBUA = processedFeatures.some(f => 
+        f.placetype === 'localadmin' && 
+        f.onsCode.startsWith('E09') && 
+        f.name === name
+      );
+      
+      if (isDuplicateLondonBUA) {
+        stats.skipped++;
+        progressBar1.update(i + 1, { status: `Skipped (London Borough BUA duplicate)` });
+        continue;
+      }
+    }
+    
     const coords = extractAllCoordinates(geometry);
     const centroid = calculateCentroid(coords);
     const bbox = calculateBBox(coords);
@@ -441,6 +519,42 @@ function convertOnsToWofSqlite(inputPath, outputPath) {
   
   log('green', `✅ Pass 1 complete: ${stats.processed} features processed\n`);
   
+  // Create synthetic "London" locality for all London Boroughs
+  log('blue', '🏙️  Creating synthetic London locality...');
+  const londonBoroughs = processedFeatures.filter(f => 
+    f.placetype === 'localadmin' && f.onsCode.startsWith('E09')
+  );
+  
+  if (londonBoroughs.length > 0) {
+    const londonCentroid = calculateAggregatedCentroid(londonBoroughs);
+    const londonBBox = calculateAggregatedBBox(londonBoroughs);
+    const londonArea = londonBoroughs.reduce((sum, b) => sum + b.area, 0);
+    
+    // Use special WOF ID for synthetic London (999999999)
+    const syntheticLondon = {
+      wofId: 999999999,
+      onsCode: 'SYNTHETIC_LONDON',
+      name: 'London',
+      placetype: 'locality',
+      centroid: londonCentroid,
+      bbox: londonBBox,
+      area: londonArea,
+      geometry: null, // No actual geometry needed for point-in-polygon lookup
+      nameEn: null,
+      isSynthetic: true
+    };
+    
+    processedFeatures.push(syntheticLondon);
+    stats.processed++;
+    stats.byPlacetype['locality'] = (stats.byPlacetype['locality'] || 0) + 1;
+    
+    log('green', `   ✅ Created synthetic London locality from ${londonBoroughs.length} boroughs`);
+    log('blue', `   📍 Centroid: ${londonCentroid.lat.toFixed(4)}, ${londonCentroid.lon.toFixed(4)}`);
+    log('blue', `   📏 Area: ${londonArea.toFixed(2)} km²\n`);
+  } else {
+    log('yellow', '   ⚠️  No London Boroughs found, skipping synthetic London creation\n');
+  }
+  
   // PASS 2: Buduj hierarchię
   log('magenta', '🔗 PASS 2: Building hierarchy...');
   
@@ -467,6 +581,11 @@ function convertOnsToWofSqlite(inputPath, outputPath) {
     });
     
     progressBar2.update(i + 1, { status: featureData.name.substring(0, 30) });
+    
+    // Extra logging for monitoring progress
+    if ((i + 1) % 500 === 0) {
+      console.log(`   Progress: ${i + 1}/${processedFeatures.length} (${Math.round((i+1)/processedFeatures.length*100)}%)`);
+    }
   }
   
   progressBar2.stop();

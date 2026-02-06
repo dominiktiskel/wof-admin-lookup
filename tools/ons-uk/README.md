@@ -45,9 +45,15 @@ cd tools\ons-uk
 
 The ONS data contains 33 London Boroughs (E09 codes) but lacks a unified "Greater London" Built-up Area. To ensure Pelias returns "London" in the `locality` field for all London addresses (instead of individual borough names), the conversion process:
 
-1. **Creates a synthetic "London" locality** - A special feature (WOF ID: 999999999) representing London as a whole, with centroid and bbox calculated from all 33 boroughs
-2. **Links all London Boroughs to "London"** - Each borough's hierarchy includes `locality_id` pointing to the synthetic London
-3. **Filters duplicate BUA** - Skips Built-up Area features that duplicate London Borough names (e.g., "Kensington and Chelsea" as both localadmin and locality)
+1. **Downloads Greater London boundary from OSM** - Automatically downloads the official boundary from OpenStreetMap ([relation 175342](https://www.openstreetmap.org/relation/175342)) via Nominatim API during preparation
+2. **Creates a synthetic "London" locality** - A special feature (WOF ID: 999999999) using the official OSM boundary, with centroid and bbox calculated from all 33 boroughs
+3. **Links all London Boroughs to "London"** - Each borough's hierarchy includes `locality_id` pointing to the synthetic London
+4. **Filters duplicate BUA** - Skips Built-up Area features that duplicate London Borough names (e.g., "Kensington and Chelsea" as both localadmin and locality)
+
+**Data Source**: Greater London boundary is downloaded from:
+```
+https://nominatim.openstreetmap.org/lookup?osm_ids=R175342&format=geojson&polygon_geojson=1
+```
 
 **Result**: Places in London correctly show:
 - `localadmin`: Borough name (e.g., "Kensington and Chelsea")

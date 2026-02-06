@@ -1,35 +1,94 @@
-# OSM to WOF SQLite Converter
+# WOF Admin Lookup - Tools
 
-Narzędzie do konwersji granic administracyjnych z OpenStreetMap (GeoJSON) na format SQLite kompatybilny z Who's on First (WOF) dla Pelias.
+Tools for creating Who's on First (WOF) SQLite databases from various official data sources for Pelias geocoder.
 
-## Problem
+## Structure
 
-Dane WOF często nie zawierają granic administracyjnych dla małych miejscowości (wsi, sołectw), szczególnie w Polsce. To narzędzie pozwala uzupełnić dane WOF o aktualne granice z OpenStreetMap.
+```
+tools/
+├── ons-uk/          # UK ONS Official Boundaries (~9,137 features)
+├── ign-spain/       # Spain IGN Official Boundaries (~8,196 features)
+├── osm/             # OpenStreetMap Boundaries (any region)
+├── package.json     # Shared Node.js dependencies
+└── node_modules/    # Shared dependency directory
+```
 
-## 🎯 Dwie wersje narzędzia
+## Available Tools
 
-### **Wersja 1: Uzupełnienie WOF (podstawowa)**
-- Pliki: `osm-to-wof-sqlite.js`, `prepare-osm-boundaries.sh/ps1`
-- Cel: **Uzupełnienie** istniejących danych WOF o małe miejscowości
-- Generuje: Tylko wybrane poziomy (locality, borough, neighbourhood)
-- **Brak hierarchii** - wymaga współpracy z oryginalnym WOF
-- ⚠️ **Problem**: Może "zasłaniać" oryginalne WOF dane jeśli występują konflikty
+### 1. ONS UK - Official UK Boundaries
 
-### **Wersja 2: Pełna hierarchia (zaawansowana)** ⭐ NOWA!
-- Pliki: `osm-to-wof-hierarchical.js`, `prepare-osm-hierarchical.sh/ps1`
-- Cel: **Całkowite zastąpienie** danych WOF danymi z OSM
-- Generuje: **WSZYSTKIE** poziomy (country, region, county, localadmin, locality, borough, neighbourhood)
-- **Pełna hierarchia** - buduje parent-child relationships
-- ✅ **Zalety**: Kompletna hierarchia, brak konfliktów, wszystkie admin levels
+**Directory:** [`ons-uk/`](ons-uk/)
 
-## Wymagania
+Official administrative boundaries from the UK Office for National Statistics (ONS).
+
+- **Data Source:** ONS Open Geography Portal
+- **Features:** Countries, Regions, Counties, Local Authority Districts, Built-up Areas
+- **Total:** ~9,137 features
+- **License:** Open Government Licence v3.0
+
+**Usage:**
+```bash
+cd ons-uk/
+./prepare-ons-uk.sh
+```
+
+See [ons-uk/README.md](ons-uk/README.md) for details.
+
+---
+
+### 2. IGN Spain - Official Spanish Boundaries
+
+**Directory:** [`ign-spain/`](ign-spain/)
+
+Official administrative boundaries from the Spanish National Geographic Institute (IGN).
+
+- **Data Source:** IGN API-Features (OGC standard)
+- **Features:** Country, Autonomous Communities, Provinces, Municipalities
+- **Total:** ~8,196 features
+- **License:** CC BY 4.0
+
+**Usage:**
+```bash
+cd ign-spain/
+./prepare-ign-spain.sh
+```
+
+See [ign-spain/README.md](ign-spain/README.md) for details.
+
+---
+
+### 3. OSM - OpenStreetMap Boundaries
+
+**Directory:** [`osm/`](osm/)
+
+Extract administrative boundaries from OpenStreetMap data (any region).
+
+- **Data Source:** OpenStreetMap (via Overpass or PBF extract)
+- **Features:** All admin levels (country to neighbourhood)
+- **License:** ODbL
+
+**Two versions available:**
+- **Standard:** Supplement WOF data (selected levels only)
+- **Hierarchical:** Complete replacement with full hierarchy
+
+**Usage:**
+```bash
+cd osm/
+./prepare-osm-boundaries.sh        # Standard
+./prepare-osm-hierarchical.sh      # Hierarchical
+```
+
+See [osm/README.md](osm/README.md) for details.
+
+---
+
+## Requirements
 
 - Node.js v18+
-- npm
-- osmium-tool (do filtrowania PBF)
-- GDAL/ogr2ogr (do konwersji na GeoJSON)
+- npm (run `npm install` from this directory)
+- For OSM tools: osmium-tool, GDAL/ogr2ogr
 
-## Instalacja
+## Installation
 
 ```bash
 cd wof-admin-lookup/tools

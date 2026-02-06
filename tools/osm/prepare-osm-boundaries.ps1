@@ -157,10 +157,10 @@ Write-Host "[4/4] Converting to WOF SQLite format..." -ForegroundColor Yellow
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# Sprawdź czy node_modules istnieje
-if (-not (Test-Path (Join-Path $scriptDir "node_modules"))) {
+# Sprawdź czy node_modules istnieje (w nadrzędnym katalogu tools)
+if (-not (Test-Path (Join-Path $scriptDir ".." "node_modules"))) {
     Write-Host "      Installing dependencies..." -ForegroundColor Gray
-    Push-Location $scriptDir
+    Push-Location (Join-Path $scriptDir "..")
     npm install
     Pop-Location
 }

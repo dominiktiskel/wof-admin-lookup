@@ -266,10 +266,10 @@ if ! command -v node &> /dev/null; then
     exit 1
 fi
 
-# Sprawdź czy node_modules istnieje
-if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
+# Sprawdź czy node_modules istnieje (w nadrzędnym katalogu tools)
+if [ ! -d "$SCRIPT_DIR/../node_modules" ]; then
     echo -e "${GRAY}      Installing dependencies...${NC}"
-    cd "$SCRIPT_DIR"
+    cd "$SCRIPT_DIR/.."
     npm install
     cd - > /dev/null
 fi

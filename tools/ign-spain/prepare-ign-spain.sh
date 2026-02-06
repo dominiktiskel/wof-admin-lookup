@@ -1,8 +1,8 @@
 #!/bin/bash
-# Script to download and convert ONS (Office for National Statistics) 
-# administrative boundaries for UK into WOF SQLite format
+# Script to download and convert IGN (Spain) administrative boundaries
+# into WOF SQLite format
 #
-# Usage: ./prepare-ons-uk.sh [-o OUTPUT_DIR] [--skip-download]
+# Usage: ./prepare-ign-spain.sh [-o OUTPUT_DIR] [--skip-download]
 
 set -e
 
@@ -26,20 +26,19 @@ usage() {
     echo ""
     echo "Options:"
     echo "  -o, --output       Output directory (default: current directory)"
-    echo "  --skip-download    Skip downloading ONS data (use existing files)"
+    echo "  --skip-download    Skip downloading IGN data (use existing files)"
     echo "  -h, --help         Show this help message"
     echo ""
-    echo "This script downloads official UK administrative boundaries from ONS"
-    echo "Open Geography Portal and converts them to WOF SQLite format."
+    echo "This script downloads official Spanish administrative boundaries from IGN"
+    echo "(Instituto Geográfico Nacional) and converts them to WOF SQLite format."
     echo ""
-    echo "Data sources (all under Open Government Licence):"
-    echo "  - Countries (4 features)"
-    echo "  - Regions (9 features - England only)"
-    echo "  - Counties (218 features)"
-    echo "  - Local Authority Districts (361 features)"
-    echo "  - Built-up Areas (8545 features)"
+    echo "Data sources (all under CC BY 4.0 license):"
+    echo "  - Country (1 feature - Spain)"
+    echo "  - Autonomous Communities (19 features)"
+    echo "  - Provinces (52 features)"
+    echo "  - Municipalities (~8,124 features)"
     echo ""
-    echo "Requires: Node.js, download-ons-paginated.js in same directory"
+    echo "Requires: Node.js, download-ign-spain.js in same directory"
     echo ""
     exit 1
 }
@@ -68,26 +67,25 @@ done
 mkdir -p "$OUTPUT_DIR"
 
 # File paths
-COUNTRIES_FILE="${OUTPUT_DIR}/ons-countries.geojson"
-REGIONS_FILE="${OUTPUT_DIR}/ons-regions.geojson"
-COUNTIES_FILE="${OUTPUT_DIR}/ons-counties.geojson"
-LAD_FILE="${OUTPUT_DIR}/ons-lad.geojson"
-BUA_FILE="${OUTPUT_DIR}/ons-bua.geojson"
-SQLITE_FILE="${OUTPUT_DIR}/whosonfirst-data-ons-uk.db"
+COUNTRY_FILE="${OUTPUT_DIR}/ign-country.geojson"
+REGIONS_FILE="${OUTPUT_DIR}/ign-regions.geojson"
+PROVINCES_FILE="${OUTPUT_DIR}/ign-provinces.geojson"
+MUNICIPALITIES_FILE="${OUTPUT_DIR}/ign-municipalities.geojson"
+SQLITE_FILE="${OUTPUT_DIR}/whosonfirst-data-ign-spain.db"
 
 echo ""
 echo -e "${CYAN}========================================${NC}"
-echo -e "${CYAN} ONS UK Boundaries to WOF SQLite${NC}"
+echo -e "${CYAN} IGN Spain Boundaries to WOF SQLite${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
 echo -e "${BLUE}Output directory: ${NC}$OUTPUT_DIR"
 echo ""
 
-# Script directory (for finding download-ons-paginated.js)
+# Script directory (for finding download-ign-spain.js)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Step 1: Download ONS data
-echo -e "${YELLOW}[1/3] Downloading ONS administrative boundaries...${NC}"
+# Step 1: Download IGN data
+echo -e "${YELLOW}[1/3] Downloading IGN administrative boundaries...${NC}"
 
 if [ "$SKIP_DOWNLOAD" = true ]; then
     echo -e "${GRAY}      Skipping download (--skip-download)${NC}"
@@ -95,54 +93,49 @@ else
     # Check if Node.js is available
     if ! command -v node &> /dev/null; then
         echo -e "${RED}      ERROR: Node.js not found!${NC}"
-        echo -e "${YELLOW}      Install with: apt install nodejs${NC}"
+        echo -e "${YELLOW}      Install with: apt install nodejs (or yum/brew depending on OS)${NC}"
         exit 1
     fi
     
     # Check if download script exists
-    DOWNLOAD_SCRIPT="$SCRIPT_DIR/download-ons-paginated.js"
+    DOWNLOAD_SCRIPT="$SCRIPT_DIR/download-ign-spain.js"
     if [ ! -f "$DOWNLOAD_SCRIPT" ]; then
-        echo -e "${RED}      ERROR: download-ons-paginated.js not found!${NC}"
+        echo -e "${RED}      ERROR: download-ign-spain.js not found!${NC}"
+        echo -e "${YELLOW}      Expected location: $DOWNLOAD_SCRIPT${NC}"
         exit 1
     fi
     
-    echo -e "${GRAY}      Using paginated download (reliable for large datasets)${NC}"
+    echo -e "${GRAY}      Using OGC API-Features from IGN${NC}"
+    echo -e "${GRAY}      API: https://api-features.ign.es/${NC}"
     echo ""
     
-    # Download each dataset using pagination
-    echo -e "${CYAN}      [1/5] Countries (4 features)...${NC}"
-    if [ -f "$COUNTRIES_FILE" ] && [ -s "$COUNTRIES_FILE" ]; then
+    # Download each administrative level
+    echo -e "${CYAN}      [1/4] Country (Spain)...${NC}"
+    if [ -f "$COUNTRY_FILE" ] && [ -s "$COUNTRY_FILE" ]; then
         echo -e "${GRAY}            File exists, skipping${NC}"
     else
-        node "$DOWNLOAD_SCRIPT" countries "$COUNTRIES_FILE"
+        node "$DOWNLOAD_SCRIPT" country "$COUNTRY_FILE"
     fi
     
-    echo -e "${CYAN}      [2/5] Regions (9 features - England only)...${NC}"
+    echo -e "${CYAN}      [2/4] Autonomous Communities (19 features)...${NC}"
     if [ -f "$REGIONS_FILE" ] && [ -s "$REGIONS_FILE" ]; then
         echo -e "${GRAY}            File exists, skipping${NC}"
     else
         node "$DOWNLOAD_SCRIPT" regions "$REGIONS_FILE"
     fi
     
-    echo -e "${CYAN}      [3/5] Counties (~218 features)...${NC}"
-    if [ -f "$COUNTIES_FILE" ] && [ -s "$COUNTIES_FILE" ]; then
+    echo -e "${CYAN}      [3/4] Provinces (52 features)...${NC}"
+    if [ -f "$PROVINCES_FILE" ] && [ -s "$PROVINCES_FILE" ]; then
         echo -e "${GRAY}            File exists, skipping${NC}"
     else
-        node "$DOWNLOAD_SCRIPT" counties "$COUNTIES_FILE"
+        node "$DOWNLOAD_SCRIPT" provinces "$PROVINCES_FILE"
     fi
     
-    echo -e "${CYAN}      [4/5] Local Authority Districts (~361 features)...${NC}"
-    if [ -f "$LAD_FILE" ] && [ -s "$LAD_FILE" ]; then
+    echo -e "${CYAN}      [4/4] Municipalities (~8,124 features, may take 10-15 minutes)...${NC}"
+    if [ -f "$MUNICIPALITIES_FILE" ] && [ -s "$MUNICIPALITIES_FILE" ]; then
         echo -e "${GRAY}            File exists, skipping${NC}"
     else
-        node "$DOWNLOAD_SCRIPT" lad "$LAD_FILE"
-    fi
-    
-    echo -e "${CYAN}      [5/5] Built-up Areas (~8545 features, may take a while)...${NC}"
-    if [ -f "$BUA_FILE" ] && [ -s "$BUA_FILE" ]; then
-        echo -e "${GRAY}            File exists, skipping${NC}"
-    else
-        node "$DOWNLOAD_SCRIPT" bua "$BUA_FILE"
+        node "$DOWNLOAD_SCRIPT" municipalities "$MUNICIPALITIES_FILE"
     fi
 fi
 
@@ -152,7 +145,7 @@ echo -e "${YELLOW}[2/3] Verifying downloaded files...${NC}"
 
 # Check if all source files exist
 MISSING_FILES=false
-for file in "$COUNTRIES_FILE" "$REGIONS_FILE" "$COUNTIES_FILE" "$LAD_FILE" "$BUA_FILE"; do
+for file in "$COUNTRY_FILE" "$REGIONS_FILE" "$PROVINCES_FILE" "$MUNICIPALITIES_FILE"; do
     if [ ! -f "$file" ]; then
         echo -e "${RED}      ERROR: Missing file: $file${NC}"
         MISSING_FILES=true
@@ -174,20 +167,20 @@ fi
 echo ""
 echo -e "${YELLOW}[3/3] Converting to WOF SQLite format...${NC}"
 
-# Check if node_modules exists
-if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
+# Check if node_modules exists (in parent tools directory)
+if [ ! -d "$SCRIPT_DIR/../node_modules" ]; then
     echo -e "${GRAY}      Installing dependencies...${NC}"
-    cd "$SCRIPT_DIR"
+    cd "$SCRIPT_DIR/.."
     npm install
     cd - > /dev/null
 fi
 
 # Run converter with multiple input files (no merge needed)
-echo -e "${CYAN}      This may take 10-20 minutes - processing ~9000 features...${NC}"
+echo -e "${CYAN}      This may take 15-30 minutes - processing ~8,200 features...${NC}"
 
-INPUT_FILES="${COUNTRIES_FILE},${REGIONS_FILE},${COUNTIES_FILE},${LAD_FILE},${BUA_FILE}"
+INPUT_FILES="${COUNTRY_FILE},${REGIONS_FILE},${PROVINCES_FILE},${MUNICIPALITIES_FILE}"
 
-node "$SCRIPT_DIR/ons-to-wof-sqlite.js" \
+node "$SCRIPT_DIR/ign-to-wof-sqlite.js" \
     -i "$INPUT_FILES" \
     -o "$SQLITE_FILE"
 
@@ -207,8 +200,8 @@ echo -e "  ${BLUE}2. Verify the database:${NC}"
 echo -e "${GRAY}     sqlite3 $SQLITE_FILE \"SELECT placetype, COUNT(*) FROM spr GROUP BY placetype;\"${NC}"
 echo ""
 echo -e "  ${BLUE}3. Restart Pelias import:${NC}"
-echo -e "${GRAY}     cd /pelias/projects/united-kingdom${NC}"
+echo -e "${GRAY}     cd /pelias/projects/spain${NC}"
 echo -e "${GRAY}     pelias import osm${NC}"
 echo ""
-echo -e "${GREEN}This database provides ~9000 UK admin boundaries (incl. 8500+ localities)!${NC}"
+echo -e "${GREEN}This database provides ~8,200 Spanish admin boundaries!${NC}"
 echo ""

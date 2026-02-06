@@ -56,7 +56,8 @@ $RegionsFile = Join-Path $OutputDir "ons-regions.geojson"
 $CountiesFile = Join-Path $OutputDir "ons-counties.geojson"
 $LadFile = Join-Path $OutputDir "ons-lad.geojson"
 $BuaFile = Join-Path $OutputDir "ons-bua.geojson"
-$MergedFile = Join-Path $OutputDir "ons-uk-merged.geojson"
+$DataDir = Join-Path $OutputDir "data"
+$LondonFile = Join-Path $DataDir "greater-london.geojson"
 $SqliteFile = Join-Path $OutputDir "whosonfirst-data-ons-uk.db"
 
 Write-Host ""
@@ -77,7 +78,7 @@ $LadUrl = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Lo
 $BuaUrl = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Built_Up_Areas_December_2022_Boundaries_GB_BFC/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson"
 
 # Step 1: Download ONS data
-Write-Host "[1/3] Downloading ONS administrative boundaries..." -ForegroundColor Yellow
+Write-Host "[1/4] Downloading ONS administrative boundaries..." -ForegroundColor Yellow
 
 if ($SkipDownload) {
     Write-Host "      Skipping download (--SkipDownload)" -ForegroundColor Gray
@@ -122,91 +123,87 @@ if ($SkipDownload) {
     Download-File -Url $BuaUrl -OutputFile $BuaFile -Description "Built-up Areas"
 }
 
-# Step 2: Merge GeoJSON files
+# Step 2: Download Greater London boundary (for synthetic London locality)
 Write-Host ""
-Write-Host "[2/3] Merging GeoJSON files..." -ForegroundColor Yellow
+Write-Host "[2/4] Downloading Greater London boundary from OpenStreetMap..." -ForegroundColor Yellow
 
-if (Test-Path $MergedFile) {
-    Write-Host "      Removing existing merged file" -ForegroundColor Gray
-    Remove-Item $MergedFile -Force
-}
-
-# Check if all source files exist
-$sourceFiles = @($CountriesFile, $RegionsFile, $CountiesFile, $LadFile, $BuaFile)
-foreach ($file in $sourceFiles) {
-    if (-not (Test-Path $file)) {
-        Write-Host "      ERROR: Missing file: $file" -ForegroundColor Red
-        exit 1
+if ($SkipDownload) {
+    Write-Host "      Skipping download (--SkipDownload)" -ForegroundColor Gray
+} else {
+    # Create data directory if it doesn't exist
+    if (-not (Test-Path $DataDir)) {
+        New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+    }
+    
+    Write-Host "      Greater London (OSM relation 175342)..." -ForegroundColor Cyan
+    if (Test-Path $LondonFile) {
+        Write-Host "        File exists, skipping" -ForegroundColor Gray
+    } else {
+        Write-Host "        Downloading from Nominatim..." -ForegroundColor Gray
+        try {
+            $LondonUrl = "https://nominatim.openstreetmap.org/details.php?osmtype=R&osmid=175342&polygon_geojson=1&format=json"
+            $ProgressPreference = 'SilentlyContinue'
+            Invoke-WebRequest -Uri $LondonUrl -OutFile $LondonFile -UseBasicParsing
+            $ProgressPreference = 'Continue'
+            
+            $fileSize = (Get-Item $LondonFile).Length
+            $fileSizeMB = [math]::Round($fileSize / 1MB, 2)
+            Write-Host "        Downloaded successfully (" -NoNewline -ForegroundColor Green
+            Write-Host "$fileSizeMB MB" -NoNewline -ForegroundColor Green
+            Write-Host ")" -ForegroundColor Green
+        } catch {
+            Write-Host "        ERROR: Download failed" -ForegroundColor Red
+            Write-Host "        $_" -ForegroundColor Red
+            exit 1
+        }
     }
 }
 
-# Merge using Node.js
-Write-Host "      Merging 5 GeoJSON files..." -ForegroundColor Cyan
-
-# Create inline Node.js script
-$nodeScript = @"
-const fs = require('fs');
-
-const files = [
-    '$($CountriesFile -replace '\\', '\\')',
-    '$($RegionsFile -replace '\\', '\\')',
-    '$($CountiesFile -replace '\\', '\\')',
-    '$($LadFile -replace '\\', '\\')',
-    '$($BuaFile -replace '\\', '\\')'
-];
-
-const merged = {
-    type: 'FeatureCollection',
-    features: []
-};
-
-let totalFeatures = 0;
-
-for (const file of files) {
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const features = data.features || [];
-    merged.features.push(...features);
-    const filename = file.split(/[\\\\\/]/).pop();
-    console.log('  Loaded ' + filename + ': ' + features.length + ' features');
-    totalFeatures += features.length;
-}
-
-fs.writeFileSync('$($MergedFile -replace '\\', '\\')', JSON.stringify(merged));
-console.log('  Total features: ' + totalFeatures);
-"@
-
-# Check if node is installed
-try {
-    $null = Get-Command node -ErrorAction Stop
-} catch {
-    Write-Host "      ERROR: Node.js not found!" -ForegroundColor Red
-    Write-Host "      Install from: https://nodejs.org/" -ForegroundColor Yellow
-    exit 1
-}
-
-# Run Node.js script
-try {
-    $nodeScript | node
-    Write-Host "      Created: " -NoNewline -ForegroundColor Green
-    Write-Host $MergedFile -ForegroundColor Green
-} catch {
-    Write-Host "      ERROR: Failed to merge files" -ForegroundColor Red
-    Write-Host "      $_" -ForegroundColor Red
-    exit 1
-}
-
-# Step 3: Convert to WOF SQLite
+# Step 3: Verify downloaded files
 Write-Host ""
-Write-Host "[3/3] Converting to WOF SQLite format..." -ForegroundColor Yellow
+Write-Host "[3/4] Verifying downloaded files..." -ForegroundColor Yellow
+
+# Check if all source files exist
+$sourceFiles = @($CountriesFile, $RegionsFile, $CountiesFile, $LadFile, $BuaFile, $LondonFile)
+$missingFiles = $false
+
+foreach ($file in $sourceFiles) {
+    if (-not (Test-Path $file)) {
+        Write-Host "      ERROR: Missing file: $file" -ForegroundColor Red
+        $missingFiles = $true
+    } elseif ((Get-Item $file).Length -eq 0) {
+        Write-Host "      ERROR: Empty file: $file" -ForegroundColor Red
+        $missingFiles = $true
+    } else {
+        $fileSize = (Get-Item $file).Length
+        $fileSizeKB = [math]::Round($fileSize / 1KB, 0)
+        $fileSizeMB = [math]::Round($fileSize / 1MB, 2)
+        $displaySize = if ($fileSize -gt 1MB) { "$fileSizeMB MB" } else { "$fileSizeKB KB" }
+        $fileName = Split-Path $file -Leaf
+        Write-Host "      " -NoNewline
+        Write-Host "✓" -NoNewline -ForegroundColor Green
+        Write-Host " $fileName ($displaySize)"
+    }
+}
+
+if ($missingFiles) {
+    Write-Host "      Some files are missing. Run without -SkipDownload to download them." -ForegroundColor Red
+    exit 1
+}
+
+# Step 4: Convert to WOF SQLite
+Write-Host ""
+Write-Host "[4/4] Converting to WOF SQLite format..." -ForegroundColor Yellow
 
 $ScriptDir = $PSScriptRoot
 
-# Check if node_modules exists
-$NodeModulesPath = Join-Path $ScriptDir "node_modules"
+# Check if node_modules exists (in parent tools directory)
+$ParentDir = Split-Path $ScriptDir -Parent
+$NodeModulesPath = Join-Path $ParentDir "node_modules"
 if (-not (Test-Path $NodeModulesPath)) {
     Write-Host "      Installing dependencies..." -ForegroundColor Gray
     
-    Push-Location $ScriptDir
+    Push-Location $ParentDir
     try {
         npm install
     } catch {
@@ -217,8 +214,8 @@ if (-not (Test-Path $NodeModulesPath)) {
     Pop-Location
 }
 
-# Run converter
-Write-Host "      This may take a while - processing ~8500 features..." -ForegroundColor Cyan
+# Run converter with multiple input files (no merge needed)
+Write-Host "      This may take 10-20 minutes - processing ~9000 features..." -ForegroundColor Cyan
 
 $ConverterScript = Join-Path $ScriptDir "ons-to-wof-sqlite.js"
 
@@ -227,8 +224,11 @@ if (-not (Test-Path $ConverterScript)) {
     exit 1
 }
 
+# Create comma-separated input files list
+$InputFiles = "$CountriesFile,$RegionsFile,$CountiesFile,$LadFile,$BuaFile"
+
 try {
-    & node $ConverterScript -i $MergedFile -o $SqliteFile
+    & node $ConverterScript -i $InputFiles -o $SqliteFile --london-geojson $LondonFile
 } catch {
     Write-Host "      ERROR: Conversion failed" -ForegroundColor Red
     Write-Host "      $_" -ForegroundColor Red
@@ -255,5 +255,5 @@ Write-Host "  3. Restart Pelias import:" -ForegroundColor Blue
 Write-Host "     cd /pelias/projects/united-kingdom" -ForegroundColor Gray
 Write-Host "     pelias import osm" -ForegroundColor Gray
 Write-Host ""
-Write-Host "This database provides ~8000 proper locality boundaries!" -ForegroundColor Green
+Write-Host "This database provides ~9000 UK admin boundaries (incl. 8500+ localities)!" -ForegroundColor Green
 Write-Host ""

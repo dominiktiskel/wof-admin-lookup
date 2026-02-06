@@ -180,9 +180,7 @@ foreach ($file in $sourceFiles) {
         $fileSizeMB = [math]::Round($fileSize / 1MB, 2)
         $displaySize = if ($fileSize -gt 1MB) { "$fileSizeMB MB" } else { "$fileSizeKB KB" }
         $fileName = Split-Path $file -Leaf
-        Write-Host "      " -NoNewline
-        Write-Host "✓" -NoNewline -ForegroundColor Green
-        Write-Host " $fileName ($displaySize)"
+        Write-Host "      OK: $fileName ($displaySize)" -ForegroundColor Green
     }
 }
 

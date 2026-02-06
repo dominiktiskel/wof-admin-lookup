@@ -199,6 +199,38 @@ function calculateAggregatedBBox(features) {
 }
 
 /**
+ * Ładuje Greater London boundary z pliku OSM
+ * Używa oficjalnego boundary z OpenStreetMap (relation 175342)
+ */
+function loadGreaterLondonGeometry() {
+  const londonBoundaryFile = path.join(__dirname, 'data', 'greater-london.geojson');
+  
+  if (!fs.existsSync(londonBoundaryFile)) {
+    log('yellow', '   ⚠️  Greater London boundary file not found');
+    log('yellow', '   Run: curl "https://nominatim.openstreetmap.org/lookup?osm_ids=R175342&format=geojson&polygon_geojson=1" -o data/greater-london.geojson');
+    return null;
+  }
+  
+  try {
+    const geojson = JSON.parse(fs.readFileSync(londonBoundaryFile, 'utf8'));
+    
+    if (geojson.type === 'FeatureCollection' && geojson.features && geojson.features.length > 0) {
+      return geojson.features[0].geometry;
+    } else if (geojson.type === 'Feature') {
+      return geojson.geometry;
+    } else if (geojson.type === 'Polygon' || geojson.type === 'MultiPolygon') {
+      return geojson;
+    }
+    
+    log('yellow', '   ⚠️  Invalid GeoJSON format in Greater London boundary file');
+    return null;
+  } catch (e) {
+    log('red', `   ❌ Error loading Greater London boundary: ${e.message}`);
+    return null;
+  }
+}
+
+/**
  * Waliduje geometrię
  */
 function isValidGeometry(geometry) {
@@ -530,27 +562,36 @@ function convertOnsToWofSqlite(inputPath, outputPath) {
     const londonBBox = calculateAggregatedBBox(londonBoroughs);
     const londonArea = londonBoroughs.reduce((sum, b) => sum + b.area, 0);
     
-    // Use special WOF ID for synthetic London (999999999)
-    const syntheticLondon = {
-      wofId: 999999999,
-      onsCode: 'SYNTHETIC_LONDON',
-      name: 'London',
-      placetype: 'locality',
-      centroid: londonCentroid,
-      bbox: londonBBox,
-      area: londonArea,
-      geometry: null, // No actual geometry needed for point-in-polygon lookup
-      nameEn: null,
-      isSynthetic: true
-    };
+    // Load official Greater London boundary from OSM (relation 175342)
+    const londonGeometry = loadGreaterLondonGeometry();
     
-    processedFeatures.push(syntheticLondon);
-    stats.processed++;
-    stats.byPlacetype['locality'] = (stats.byPlacetype['locality'] || 0) + 1;
+    if (!londonGeometry) {
+      log('red', '   ❌ Cannot create synthetic London without geometry');
+      log('yellow', '   Skipping synthetic London creation\n');
+    } else {
+      // Use special WOF ID for synthetic London (999999999)
+      const syntheticLondon = {
+        wofId: 999999999,
+        onsCode: 'SYNTHETIC_LONDON',
+        name: 'London',
+        placetype: 'locality',
+        centroid: londonCentroid,
+        bbox: londonBBox,
+        area: londonArea,
+        geometry: londonGeometry, // Official boundary from OSM
+        nameEn: null,
+        isSynthetic: true
+      };
     
-    log('green', `   ✅ Created synthetic London locality from ${londonBoroughs.length} boroughs`);
-    log('blue', `   📍 Centroid: ${londonCentroid.lat.toFixed(4)}, ${londonCentroid.lon.toFixed(4)}`);
-    log('blue', `   📏 Area: ${londonArea.toFixed(2)} km²\n`);
+      processedFeatures.push(syntheticLondon);
+      stats.processed++;
+      stats.byPlacetype['locality'] = (stats.byPlacetype['locality'] || 0) + 1;
+      
+      log('green', `   ✅ Created synthetic London locality from ${londonBoroughs.length} boroughs`);
+      log('blue', `   📍 Centroid: ${londonCentroid.lat.toFixed(4)}, ${londonCentroid.lon.toFixed(4)}`);
+      log('blue', `   📏 Area: ${londonArea.toFixed(2)} km²`);
+      log('blue', `   🗺️  Geometry: ${londonGeometry.type} from OSM relation 175342\n`);
+    }
   } else {
     log('yellow', '   ⚠️  No London Boroughs found, skipping synthetic London creation\n');
   }

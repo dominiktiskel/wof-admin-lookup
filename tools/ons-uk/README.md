@@ -43,17 +43,23 @@ cd tools\ons-uk
 
 ## Special Handling: London
 
-The ONS data contains 33 London Boroughs (E09 codes) but lacks a unified "Greater London" Built-up Area. To ensure Pelias returns "London" in the `locality` field for all London addresses (instead of individual borough names), the conversion process:
+The ONS data contains 33 London Boroughs (E09 codes) but lacks a unified "Greater London" Built-up Area. To ensure Pelias returns "London" in the `locality` field for all London addresses (instead of individual borough names), the conversion process uses a **"ghost loader" technique**:
 
-1. **Creates a synthetic "London" locality** - A special feature (WOF ID: 999999999) with centroid and bbox calculated from all 33 boroughs
-2. **Links all London Boroughs to "London"** - Each borough's hierarchy includes `locality_id` pointing to the synthetic London
-3. **Filters duplicate BUA** - Skips Built-up Area features that duplicate London Borough names (e.g., "Kensington and Chelsea" as both localadmin and locality)
-4. **Excludes synthetic London from Point-in-Polygon** - The synthetic London has no geometry in the `geojson` table, so it doesn't interfere with borough lookups
+1. **Downloads Greater London boundary** - Fetches official boundary from OpenStreetMap (relation 175342)
+2. **Creates synthetic "London" locality** - A special feature (WOF ID: 999999999) with geometry from OSM
+3. **Uses dual placetype strategy**:
+   - **SPR table**: `placetype = 'macrocounty'` - Ensures London is loaded into `wofData` by the macrocounty worker (which runs AFTER localadmin worker)
+   - **GeoJSON body**: `wof:placetype = 'locality'` - Ensures hierarchy resolution treats it as a locality
+4. **Links all London Boroughs to "London"** - Each borough's hierarchy includes `locality_id` pointing to the synthetic London
+5. **Filters duplicate BUA** - Skips Built-up Area features that duplicate London Borough names
 
 **How it works**:
-- Point-in-Polygon lookup finds the borough (localadmin) because boroughs have geometries
-- Hierarchy lookup then adds "London" as locality through the ancestors table
-- This ensures both borough and London are returned in API responses
+- Search order: neighbourhood → borough → **locality** → **localadmin** → county → **macrocounty** → ...
+- Point-in-Polygon lookup for a London address finds the borough in the `localadmin` layer → STOP
+- Hierarchy resolution uses the borough's `locality_id` (999999999) to look up London from `wofData`
+- London was loaded into `wofData` by the `macrocounty` worker (because SPR says `placetype='macrocounty'`)
+- But `wofData` contains the GeoJSON body which says `wof:placetype='locality'`
+- Result: Both borough (localadmin) and London (locality) are returned
 
 **Result**: Places in London correctly show:
 - `localadmin`: Borough name (e.g., "Kensington and Chelsea")
@@ -61,7 +67,7 @@ The ONS data contains 33 London Boroughs (E09 codes) but lacks a unified "Greate
 
 You can verify this with:
 ```bash
-node check-london.js
+node verify-london-tables.js
 ```
 
 ## License

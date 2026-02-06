@@ -272,6 +272,35 @@ function extractName(props) {
 }
 
 /**
+ * Wczytuje geometrię Greater London z pliku Nominatim JSON
+ * Nominatim API zwraca format: { ..., "geometry": { "type": "...", "coordinates": [...] } }
+ */
+function loadGreaterLondonGeometry(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    log('yellow', `⚠️  Greater London geometry file not found: ${filePath}`);
+    return null;
+  }
+  
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const data = JSON.parse(content);
+    
+    // Nominatim details endpoint returns geometry in 'geometry' field
+    if (data.geometry && data.geometry.type && data.geometry.coordinates) {
+      log('green', `   ✅ Loaded Greater London geometry from ${path.basename(filePath)}`);
+      log('blue', `      Type: ${data.geometry.type}`);
+      return data.geometry;
+    }
+    
+    log('red', `   ❌ Invalid geometry format in ${filePath}`);
+    return null;
+  } catch (e) {
+    log('red', `   ❌ Error loading Greater London geometry: ${e.message}`);
+    return null;
+  }
+}
+
+/**
  * Znajduje parent dla danego feature używając Point-in-Polygon
  */
 function findParent(centroid, placetype, potentialParents) {
@@ -388,9 +417,20 @@ function loadFeaturesFromFile(filePath) {
 /**
  * Główna funkcja konwersji
  */
-function convertOnsToWofSqlite(inputPath, outputPath) {
+function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
   log('cyan', '\n🇬🇧  ONS to WOF SQLite Converter');
   log('cyan', '=====================================\n');
+  
+  // Load Greater London geometry for synthetic London locality
+  let londonGeometry = null;
+  if (londonGeojsonPath) {
+    log('blue', '🏙️  Loading Greater London boundary...');
+    londonGeometry = loadGreaterLondonGeometry(londonGeojsonPath);
+    if (!londonGeometry) {
+      log('yellow', '⚠️  Will create synthetic London without geometry (hierarchy only)');
+    }
+    console.log(); // Empty line
+  }
   
   // Handle multiple input files (comma-separated or glob pattern)
   let inputFiles = [];
@@ -526,23 +566,38 @@ function convertOnsToWofSqlite(inputPath, outputPath) {
   );
   
   if (londonBoroughs.length > 0) {
+    // Calculate fallback values from boroughs
     const londonCentroid = calculateAggregatedCentroid(londonBoroughs);
     const londonBBox = calculateAggregatedBBox(londonBoroughs);
     const londonArea = londonBoroughs.reduce((sum, b) => sum + b.area, 0);
     
+    // If we have external London geometry, use it for centroid/bbox
+    let finalCentroid = londonCentroid;
+    let finalBBox = londonBBox;
+    let finalArea = londonArea;
+    
+    if (londonGeometry) {
+      const coords = extractAllCoordinates(londonGeometry);
+      if (coords.length > 0) {
+        finalCentroid = calculateCentroid(coords);
+        finalBBox = calculateBBox(coords);
+        finalArea = calculateArea(londonGeometry);
+      }
+    }
+    
     // Use special WOF ID for synthetic London (999999999)
-    // NOTE: geometry is null - synthetic London is NOT used for Point-in-Polygon lookup
-    // It exists only in spr/ancestors tables to provide locality in hierarchy
-    // Boroughs (localadmin) will be found via PiP, London via hierarchy
+    // Strategy: Store in SPR with placetype='macrocounty' (unused in UK, comes after localadmin in search)
+    // but keep wof:placetype='locality' in GeoJSON body so hierarchy resolution works correctly
+    // This allows: boroughs found via localadmin PiP -> London resolved from their hierarchy
     const syntheticLondon = {
       wofId: 999999999,
       onsCode: 'SYNTHETIC_LONDON',
       name: 'London',
-      placetype: 'locality',
-      centroid: londonCentroid,
-      bbox: londonBBox,
-      area: londonArea,
-      geometry: null, // No geometry - not used for PiP, only for hierarchy
+      placetype: 'locality',  // Used in GeoJSON body for hierarchy resolution
+      centroid: finalCentroid,
+      bbox: finalBBox,
+      area: finalArea,
+      geometry: londonGeometry || null,  // Use OSM boundary if available
       nameEn: null,
       isSynthetic: true
     };
@@ -552,9 +607,15 @@ function convertOnsToWofSqlite(inputPath, outputPath) {
     stats.byPlacetype['locality'] = (stats.byPlacetype['locality'] || 0) + 1;
     
     log('green', `   ✅ Created synthetic London locality from ${londonBoroughs.length} boroughs`);
-    log('blue', `   📍 Centroid: ${londonCentroid.lat.toFixed(4)}, ${londonCentroid.lon.toFixed(4)}`);
-    log('blue', `   📏 Area: ${londonArea.toFixed(2)} km²`);
-    log('blue', `   🔗 Hierarchy only (no PiP geometry) - allows boroughs to be found via PiP\n`);
+    log('blue', `   📍 Centroid: ${finalCentroid.lat.toFixed(4)}, ${finalCentroid.lon.toFixed(4)}`);
+    log('blue', `   📏 Area: ${finalArea.toFixed(2)} km²`);
+    if (londonGeometry) {
+      log('blue', `   🗺️  Using Greater London boundary from OSM (relation 175342)`);
+      log('blue', `   🔧 Ghost loader technique: SPR placetype=macrocounty, GeoJSON wof:placetype=locality`);
+    } else {
+      log('yellow', `   ⚠️  No external geometry - hierarchy only (localadmin PiP will still work)`);
+    }
+    console.log();
   } else {
     log('yellow', '   ⚠️  No London Boroughs found, skipping synthetic London creation\n');
   }
@@ -728,20 +789,22 @@ function convertOnsToWofSqlite(inputPath, outputPath) {
       const maxLat = bboxParts[3] || 0;
       
       // Insert geojson
-      // SKIP synthetic London - it should NOT be in geojson table for Point-in-Polygon
-      // London will be available only through hierarchy (ancestors table)
-      // This allows boroughs (localadmin) to be found via PiP, while London is returned via hierarchy
-      if (!fd.isSynthetic) {
-        insertGeojson.run(fd.wofId, JSON.stringify(wofRecord));
-      }
+      // Synthetic features MUST be in geojson table to be loaded into wofData
+      // The SPR placetype='macrocounty' ensures it's loaded by macrocounty worker (after localadmin)
+      // so it won't interfere with borough PiP lookups
+      insertGeojson.run(fd.wofId, JSON.stringify(wofRecord));
       
       // Insert SPR
+      // For synthetic features: use 'macrocounty' in SPR (ghost loader technique)
+      // This ensures London is loaded into wofData by macrocounty worker (comes after localadmin)
+      // while GeoJSON body keeps wof:placetype='locality' for proper hierarchy resolution
+      const sprPlacetype = fd.isSynthetic ? 'macrocounty' : fd.placetype;
       const countryValue = fd.placetype === 'country' ? '' : 'GB';
       insertSpr.run(
         fd.wofId,
         parentId,
         fd.name,
-        fd.placetype,
+        sprPlacetype,
         countryValue,
         fd.centroid.lat,
         fd.centroid.lon,
@@ -807,9 +870,10 @@ program
   .version('1.0.0')
   .requiredOption('-i, --input <path>', 'Input GeoJSON file (merged ONS data)')
   .requiredOption('-o, --output <path>', 'Output SQLite file', 'whosonfirst-data-ons-uk.db')
+  .option('--london-geojson <path>', 'Path to Greater London GeoJSON file (for synthetic London locality)')
   .parse(process.argv);
 
 const options = program.opts();
 
 // Run conversion
-convertOnsToWofSqlite(options.input, options.output);
+convertOnsToWofSqlite(options.input, options.output, options.londonGeojson);

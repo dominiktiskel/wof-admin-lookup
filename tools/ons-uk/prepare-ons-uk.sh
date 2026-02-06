@@ -73,6 +73,7 @@ REGIONS_FILE="${OUTPUT_DIR}/ons-regions.geojson"
 COUNTIES_FILE="${OUTPUT_DIR}/ons-counties.geojson"
 LAD_FILE="${OUTPUT_DIR}/ons-lad.geojson"
 BUA_FILE="${OUTPUT_DIR}/ons-bua.geojson"
+LONDON_FILE="${OUTPUT_DIR}/data/greater-london.geojson"
 SQLITE_FILE="${OUTPUT_DIR}/whosonfirst-data-ons-uk.db"
 
 echo ""
@@ -87,7 +88,7 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Step 1: Download ONS data
-echo -e "${YELLOW}[1/3] Downloading ONS administrative boundaries...${NC}"
+echo -e "${YELLOW}[1/4] Downloading ONS administrative boundaries...${NC}"
 
 if [ "$SKIP_DOWNLOAD" = true ]; then
     echo -e "${GRAY}      Skipping download (--skip-download)${NC}"
@@ -146,13 +147,43 @@ else
     fi
 fi
 
-# Step 2: Verify downloaded files
+# Step 2: Download Greater London boundary (for synthetic London locality)
 echo ""
-echo -e "${YELLOW}[2/3] Verifying downloaded files...${NC}"
+echo -e "${YELLOW}[2/4] Downloading Greater London boundary from OpenStreetMap...${NC}"
+
+if [ "$SKIP_DOWNLOAD" = true ]; then
+    echo -e "${GRAY}      Skipping download (--skip-download)${NC}"
+else
+    # Create data directory if it doesn't exist
+    mkdir -p "${OUTPUT_DIR}/data"
+    
+    echo -e "${CYAN}      Greater London (OSM relation 175342)...${NC}"
+    if [ -f "$LONDON_FILE" ] && [ -s "$LONDON_FILE" ]; then
+        echo -e "${GRAY}            File exists, skipping${NC}"
+    else
+        # Download from Nominatim
+        echo -e "${GRAY}            Downloading from Nominatim...${NC}"
+        curl -sSL -o "$LONDON_FILE" \
+            "https://nominatim.openstreetmap.org/details.php?osmtype=R&osmid=175342&polygon_geojson=1&format=json"
+        
+        # Verify download
+        if [ -f "$LONDON_FILE" ] && [ -s "$LONDON_FILE" ]; then
+            SIZE=$(du -h "$LONDON_FILE" | cut -f1)
+            echo -e "${GREEN}            ✓ Downloaded successfully ($SIZE)${NC}"
+        else
+            echo -e "${RED}            ERROR: Download failed${NC}"
+            exit 1
+        fi
+    fi
+fi
+
+# Step 3: Verify downloaded files
+echo ""
+echo -e "${YELLOW}[3/4] Verifying downloaded files...${NC}"
 
 # Check if all source files exist
 MISSING_FILES=false
-for file in "$COUNTRIES_FILE" "$REGIONS_FILE" "$COUNTIES_FILE" "$LAD_FILE" "$BUA_FILE"; do
+for file in "$COUNTRIES_FILE" "$REGIONS_FILE" "$COUNTIES_FILE" "$LAD_FILE" "$BUA_FILE" "$LONDON_FILE"; do
     if [ ! -f "$file" ]; then
         echo -e "${RED}      ERROR: Missing file: $file${NC}"
         MISSING_FILES=true
@@ -170,9 +201,9 @@ if [ "$MISSING_FILES" = true ]; then
     exit 1
 fi
 
-# Step 3: Convert to WOF SQLite
+# Step 4: Convert to WOF SQLite
 echo ""
-echo -e "${YELLOW}[3/3] Converting to WOF SQLite format...${NC}"
+echo -e "${YELLOW}[4/4] Converting to WOF SQLite format...${NC}"
 
 # Check if node_modules exists (in parent tools directory)
 if [ ! -d "$SCRIPT_DIR/../node_modules" ]; then
@@ -189,7 +220,8 @@ INPUT_FILES="${COUNTRIES_FILE},${REGIONS_FILE},${COUNTIES_FILE},${LAD_FILE},${BU
 
 node "$SCRIPT_DIR/ons-to-wof-sqlite.js" \
     -i "$INPUT_FILES" \
-    -o "$SQLITE_FILE"
+    -o "$SQLITE_FILE" \
+    --london-geojson "$LONDON_FILE"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"

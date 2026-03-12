@@ -330,9 +330,11 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     }
     
     let geometry = feature.geometry;
+    let isPointDerived = false;
     
     // Dla punktów (place=*) stwórz minimalny polygon wokół punktu
     if (geometry && geometry.type === 'Point') {
+      isPointDerived = true;
       const [lon, lat] = geometry.coordinates;
       // Stwórz mały kwadrat ~100m wokół punktu (0.001° ≈ 100m)
       const offset = 0.001;
@@ -368,6 +370,17 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
       continue;
     }
     
+    // Filter out statistical subregions (NUTS3) at admin_level=8.
+    // In GZM (Silesian Metropolis) and other areas, these are tagged as
+    // admin_level=8 but represent statistical regions, not actual localities
+    // (e.g. "Subregion gliwicki", "Podregion sosnowiecki").
+    if (placetype === 'locality' && adminLevel === '8' && /^(sub|pod)region/i.test(name)) {
+      stats.skipped++;
+      stats.filteredSubregions = (stats.filteredSubregions || 0) + 1;
+      progressBar1.update(i + 1, { status: `Skipped subregion: ${name.substring(0, 20)}` });
+      continue;
+    }
+    
     const coords = extractAllCoordinates(geometry);
     const centroid = calculateCentroid(coords);
     const bbox = calculateBBox(coords);
@@ -391,7 +404,8 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
       name,
       placetype,
       adminLevel: effectiveAdminLevel || '8',
-      placeTag,  // Zachowaj oryginalny tag place=*
+      placeTag,
+      isPointDerived,
       centroid,
       bbox,
       area,
@@ -411,7 +425,101 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
   
   progressBar1.stop();
   
-  log('green', `✅ Pass 1 complete: ${stats.processed} features processed\n`);
+  log('green', `✅ Pass 1 complete: ${stats.processed} features processed`);
+  if (stats.filteredSubregions) {
+    log('yellow', `   Filtered statistical subregions: ${stats.filteredSubregions}`);
+  }
+  
+  // POST-PASS 1: Upgrade point-derived localities and fill gaps
+  log('magenta', '\n🔧 Post-processing: upgrading locality geometries...');
+  
+  const localadmins = processedFeatures.filter(f => f.placetype === 'localadmin');
+  let upgradedCount = 0;
+  let createdCount = 0;
+  
+  // Step A: For place=city/town/village point-derived localities, replace the tiny
+  // ~100m polygon with the containing localadmin's polygon for proper PIP coverage.
+  for (const loc of processedFeatures) {
+    if (loc.placetype !== 'locality' || !loc.isPointDerived) continue;
+    if (!loc.placeTag || !['city', 'town', 'village'].includes(loc.placeTag)) continue;
+    
+    const pt = point([loc.centroid.lon, loc.centroid.lat]);
+    const matchingLocaladmin = localadmins.find(la => {
+      try { return booleanPointInPolygon(pt, la.geometry); }
+      catch (e) { return false; }
+    });
+    
+    if (matchingLocaladmin) {
+      loc.geometry = matchingLocaladmin.geometry;
+      loc.area = matchingLocaladmin.area;
+      loc.bbox = matchingLocaladmin.bbox;
+      upgradedCount++;
+    }
+  }
+  
+  // Step B: Safety net - for localadmins with no locality polygon covering them,
+  // create a synthetic locality if a place=city/town/village point exists inside.
+  // This handles cities that may not have a separate place=* node in OSM.
+  const CITY_PLACE_TAGS = ['city', 'town', 'village'];
+  
+  for (const la of localadmins) {
+    const laPt = point([la.centroid.lon, la.centroid.lat]);
+    
+    const coveredByLocality = processedFeatures.some(f => {
+      if (f.placetype !== 'locality') return false;
+      if (f.isPointDerived && f.area < 1) return false;
+      try { return booleanPointInPolygon(laPt, f.geometry); }
+      catch (e) { return false; }
+    });
+    
+    if (coveredByLocality) continue;
+    
+    // Check if a place=city/town/village point is within this localadmin
+    const hasCityPoint = processedFeatures.some(f =>
+      f.placetype === 'locality' && f.isPointDerived &&
+      CITY_PLACE_TAGS.includes(f.placeTag) &&
+      (() => {
+        try {
+          return booleanPointInPolygon(point([f.centroid.lon, f.centroid.lat]), la.geometry);
+        } catch (e) { return false; }
+      })()
+    );
+    
+    if (hasCityPoint) continue; // Already handled (or will be handled) by Step A
+    
+    // No locality and no city point - check if the localadmin itself has a city-like
+    // place tag on its boundary relation (some OSM relations have both boundary=admin + place=city)
+    // In that case, create a locality from the localadmin
+    if (la.placeTag && CITY_PLACE_TAGS.includes(la.placeTag)) {
+      const syntheticId = generateWofId(la.osmId + 900000000, '8');
+      processedFeatures.push({
+        wofId: syntheticId,
+        osmId: la.osmId,
+        name: la.name,
+        placetype: 'locality',
+        adminLevel: '8',
+        placeTag: la.placeTag,
+        isPointDerived: false,
+        centroid: la.centroid,
+        bbox: la.bbox,
+        area: la.area,
+        geometry: la.geometry,
+        population: la.population,
+        wikidata: la.wikidata,
+        wikipedia: la.wikipedia,
+        nameEn: la.nameEn,
+        nameDe: la.nameDe,
+        namePl: la.namePl
+      });
+      createdCount++;
+      stats.processed++;
+      stats.byPlacetype['locality'] = (stats.byPlacetype['locality'] || 0) + 1;
+    }
+  }
+  
+  log('green', `   Upgraded point localities:    ${upgradedCount}`);
+  log('green', `   Created synthetic localities: ${createdCount}`);
+  log('green', '');
   
   // PASS 2: Buduj hierarchię
   log('magenta', '🔗 PASS 2: Building hierarchy...');
@@ -632,6 +740,9 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
   log('blue', `   Total features:     ${stats.total}`);
   log('green', `   Processed:          ${stats.processed}`);
   log('yellow', `   Skipped:            ${stats.skipped}`);
+  if (stats.filteredSubregions) {
+    log('yellow', `   Filtered subregions: ${stats.filteredSubregions}`);
+  }
   
   log('cyan', '\n📍 By placetype:');
   HIERARCHY_ORDER.forEach(placetype => {

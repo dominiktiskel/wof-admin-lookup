@@ -437,11 +437,16 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
   let upgradedCount = 0;
   let createdCount = 0;
   
-  // Step A: For place=city/town/village point-derived localities, replace the tiny
-  // ~100m polygon with the containing localadmin's polygon for proper PIP coverage.
+  // Step A: For place=city/town point-derived localities, replace the tiny ~100m
+  // polygon with the containing localadmin's polygon for proper PIP coverage.
+  // Only city/town -- NOT village/hamlet! In rural gminy the localadmin polygon
+  // covers many villages, so upgrading a village point to the gmina polygon would
+  // create an oversized locality that swallows neighbouring villages.
+  const UPGRADE_PLACE_TAGS = ['city', 'town'];
+  
   for (const loc of processedFeatures) {
     if (loc.placetype !== 'locality' || !loc.isPointDerived) continue;
-    if (!loc.placeTag || !['city', 'town', 'village'].includes(loc.placeTag)) continue;
+    if (!loc.placeTag || !UPGRADE_PLACE_TAGS.includes(loc.placeTag)) continue;
     
     const pt = point([loc.centroid.lon, loc.centroid.lat]);
     const matchingLocaladmin = localadmins.find(la => {
@@ -458,10 +463,8 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
   }
   
   // Step B: Safety net - for localadmins with no locality polygon covering them,
-  // create a synthetic locality if a place=city/town/village point exists inside.
-  // This handles cities that may not have a separate place=* node in OSM.
-  const CITY_PLACE_TAGS = ['city', 'town', 'village'];
-  
+  // create a synthetic locality if a place=city/town point exists inside.
+  // Only city/town -- villages have their own admin_level=8 boundaries in OSM.
   for (const la of localadmins) {
     const laPt = point([la.centroid.lon, la.centroid.lat]);
     
@@ -474,10 +477,10 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     
     if (coveredByLocality) continue;
     
-    // Check if a place=city/town/village point is within this localadmin
+    // Check if a place=city/town point is within this localadmin
     const hasCityPoint = processedFeatures.some(f =>
       f.placetype === 'locality' && f.isPointDerived &&
-      CITY_PLACE_TAGS.includes(f.placeTag) &&
+      UPGRADE_PLACE_TAGS.includes(f.placeTag) &&
       (() => {
         try {
           return booleanPointInPolygon(point([f.centroid.lon, f.centroid.lat]), la.geometry);
@@ -485,12 +488,11 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
       })()
     );
     
-    if (hasCityPoint) continue; // Already handled (or will be handled) by Step A
+    if (hasCityPoint) continue;
     
-    // No locality and no city point - check if the localadmin itself has a city-like
+    // No locality and no city point - check if the localadmin itself has a city/town
     // place tag on its boundary relation (some OSM relations have both boundary=admin + place=city)
-    // In that case, create a locality from the localadmin
-    if (la.placeTag && CITY_PLACE_TAGS.includes(la.placeTag)) {
+    if (la.placeTag && UPGRADE_PLACE_TAGS.includes(la.placeTag)) {
       const syntheticId = generateWofId(la.osmId + 900000000, '8');
       processedFeatures.push({
         wofId: syntheticId,

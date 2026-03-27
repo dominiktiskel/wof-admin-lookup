@@ -27,17 +27,78 @@ const booleanPointInPolygon = require('@turf/boolean-point-in-polygon').default;
 const { program } = require('commander');
 const cliProgress = require('cli-progress');
 
-// Mapowanie admin_level OSM na placetype WOF
-const ADMIN_LEVEL_TO_PLACETYPE = {
+// Country-specific profiles: admin_level → WOF placetype mappings
+// Each profile also supports optional post-processing hooks
+const COUNTRY_PROFILES = {
+  // Poland: standard CEE mapping
+  // 6=powiat (county), 7=gmina (localadmin), 8=miasto/wieś (locality)
+  'PL': {
+    adminLevelMap: {
+      '2': 'country',
+      '4': 'region',
+      '6': 'county',
+      '7': 'localadmin',
+      '8': 'locality',
+      '9': 'borough',
+      '10': 'neighbourhood'
+    }
+  },
+
+  // United Kingdom: UK admin structure
+  // 4=constituent country (England/Scotland/Wales/NI), 5=English region / GLA
+  // 6=county / metropolitan county (Merseyside), 8=Local Authority District (localadmin)
+  // 9=ward (borough), 10=parish (neighbourhood)
+  // NOTE: level 8 is deliberately localadmin (not locality) for UK
+  //       localities are added via place=city/town/village nodes + synthetic London
+  'GB': {
+    adminLevelMap: {
+      '2': 'country',
+      '4': 'region',
+      '5': 'region',
+      '6': 'county',
+      '8': 'localadmin',
+      '9': 'borough',
+      '10': 'neighbourhood'
+    },
+    syntheticLondon: true   // enables synthetic "London" locality creation post-Pass-1
+  },
+
+  // Germany
+  'DE': {
+    adminLevelMap: {
+      '2': 'country',
+      '4': 'region',
+      '6': 'county',
+      '7': 'localadmin',
+      '8': 'locality',
+      '9': 'borough',
+      '10': 'neighbourhood'
+    }
+  }
+};
+
+// Default/fallback mapping (same as legacy behaviour, works for most countries)
+const DEFAULT_ADMIN_LEVEL_MAP = {
   '2': 'country',
   '4': 'region',
-  '5': 'region',      // UK regions (e.g., South East England)
+  '5': 'region',
   '6': 'county',
   '7': 'localadmin',
   '8': 'locality',
   '9': 'borough',
   '10': 'neighbourhood'
 };
+
+// Deprecated global constant kept for reference only — use getAdminLevelMap(countryCode) instead
+const ADMIN_LEVEL_TO_PLACETYPE = DEFAULT_ADMIN_LEVEL_MAP;
+
+/**
+ * Returns the admin_level → placetype map for the given country code.
+ */
+function getAdminLevelMap(countryCode) {
+  const profile = COUNTRY_PROFILES[countryCode];
+  return (profile && profile.adminLevelMap) ? profile.adminLevelMap : DEFAULT_ADMIN_LEVEL_MAP;
+}
 
 // Mapowanie place=* OSM na placetype WOF
 // Używane gdy feature nie ma admin_level (np. place=city bez boundary=administrative)
@@ -181,17 +242,20 @@ function findParent(centroid, placetype, potentialParents) {
   
   const parentPlacetype = HIERARCHY_ORDER[placetypeIndex - 1];
   
-  // Filtruj tylko odpowiednie placetype
-  const candidates = potentialParents.filter(p => p.placetype === parentPlacetype);
+  // Filtruj tylko odpowiednie placetype; skip synthetic features that don't have real geometry
+  const candidates = potentialParents.filter(p =>
+    p.placetype === parentPlacetype && !p.isSynthetic
+  );
   
   if (candidates.length === 0) return null;
   
   // Utwórz punkt z centroidu
   const pt = point([centroid.lon, centroid.lat]);
   
-  // Znajdź pierwszy polygon który zawiera punkt
-  // Sortuj po area (malejąco) aby preferować bardziej szczegółowe boundaries
-  const sortedCandidates = candidates.sort((a, b) => b.area - a.area);
+  // Sort smallest-area-first to prefer the most specific containing polygon.
+  // This matches ONS tool behaviour and prevents large national boundaries from
+  // "stealing" parent assignments that should go to smaller local boundaries.
+  const sortedCandidates = candidates.slice().sort((a, b) => a.area - b.area);
   
   for (const candidate of sortedCandidates) {
     try {
@@ -223,6 +287,11 @@ function buildHierarchy(featureData, allFeatures) {
   
   // Ustaw własny ID
   hierarchy[`${featureData.placetype}_id`] = featureData.wofId;
+
+  // UK: if this localadmin is tagged as a London borough, inject synthetic London
+  if (featureData.syntheticLondonId) {
+    hierarchy.locality_id = featureData.syntheticLondonId;
+  }
   
   // Iteruj w górę hierarchii
   let currentFeature = featureData;
@@ -233,9 +302,12 @@ function buildHierarchy(featureData, allFeatures) {
     const parent = findParent(currentFeature.centroid, currentPlacetype, allFeatures);
     
     if (!parent) break;
-    
-    // Dodaj parent do hierarchii
-    hierarchy[`${parent.placetype}_id`] = parent.wofId;
+
+    // Don't overwrite already-set hierarchy IDs (e.g., locality_id already set to London)
+    const parentKey = `${parent.placetype}_id`;
+    if (hierarchy[parentKey] === undefined || hierarchy[parentKey] === -1) {
+      hierarchy[parentKey] = parent.wofId;
+    }
     
     // Przejdź do parent
     currentFeature = parent;
@@ -251,6 +323,15 @@ function buildHierarchy(featureData, allFeatures) {
 function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
   log('cyan', '\n🗺️  OSM to WOF SQLite Converter (WITH HIERARCHY)');
   log('cyan', '================================================\n');
+
+  // Resolve country-specific admin level map
+  const countryCode = options.countryCode || null;
+  const adminLevelMap = getAdminLevelMap(countryCode);
+  const profile = COUNTRY_PROFILES[countryCode] || {};
+
+  if (countryCode) {
+    log('blue', `🌍 Country profile: ${countryCode} (${COUNTRY_PROFILES[countryCode] ? 'custom' : 'default'})`);
+  }
   
   if (!fs.existsSync(inputPath)) {
     log('red', `❌ Error: Input file not found: ${inputPath}`);
@@ -305,6 +386,21 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     const feature = features[i];
     const props = feature.properties || {};
     
+    // Extract name first (needed for special-case overrides like City of London)
+    const name = props.name ||
+                 props['name:en'] ||
+                 props['name:pl'] ||
+                 props['official_name'] ||
+                 props['alt_name'] ||
+                 props['loc_name'] ||
+                 null;
+
+    if (!name) {
+      stats.skipped++;
+      progressBar1.update(i + 1, { status: 'Skipped (no name)' });
+      continue;
+    }
+
     // Określ placetype - najpierw z admin_level, potem z place=*
     const adminLevel = props.admin_level || props['admin_level'];
     const placeTag = props.place || props['place'];
@@ -312,9 +408,15 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     let placetype = null;
     let effectiveAdminLevel = adminLevel;
     
-    if (adminLevel && ADMIN_LEVEL_TO_PLACETYPE[adminLevel]) {
-      // Ma admin_level - użyj mapowania admin_level
-      placetype = ADMIN_LEVEL_TO_PLACETYPE[adminLevel];
+    if (adminLevel && adminLevelMap[adminLevel]) {
+      // Ma admin_level - użyj mapowania admin_level (country-specific)
+      placetype = adminLevelMap[adminLevel];
+
+      // UK special case: City of London is admin_level=6 (county) but is a borough-equivalent LAD
+      if (countryCode === 'GB' && adminLevel === '6' && name === 'City of London') {
+        placetype = 'localadmin';
+        log('blue', `   🏛️  City of London: overriding admin_level=6 → localadmin`);
+      }
     } else if (placeTag && PLACE_TO_PLACETYPE[placeTag]) {
       // Nie ma admin_level ale ma place=* - użyj mapowania place
       placetype = PLACE_TO_PLACETYPE[placeTag];
@@ -353,20 +455,6 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     if (!isValidGeometry(geometry)) {
       stats.skipped++;
       progressBar1.update(i + 1, { status: 'Skipped (invalid geometry)' });
-      continue;
-    }
-    
-    const name = props.name || 
-                 props['name:en'] ||
-                 props['name:pl'] || 
-                 props['official_name'] ||
-                 props['alt_name'] ||
-                 props['loc_name'] ||
-                 null;
-    
-    if (!name) {
-      stats.skipped++;
-      progressBar1.update(i + 1, { status: 'Skipped (no name)' });
       continue;
     }
     
@@ -520,7 +608,81 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
   log('green', `   Upgraded point localities:    ${upgradedCount}`);
   log('green', `   Created synthetic localities: ${createdCount}`);
   log('green', '');
-  
+
+  // POST-PASS 1 (GB only): Create synthetic "London" locality
+  // In OSM, there is no single city-level polygon for London.
+  // London boroughs (admin_level=8) map to localadmin in the GB profile.
+  // We need a "London" locality that covers Greater London so that
+  // addresses inside GLA show "London" in the locality field.
+  //
+  // Technique (same as ons-to-wof-sqlite.js):
+  // - synthetic feature WOF ID = 999999999
+  // - SPR placetype = 'macrocounty' (ghost loader — loaded after localadmin)
+  // - GeoJSON wof:placetype = 'locality' (for hierarchy resolution)
+  // - All localadmin features inside GLA get locality_id = 999999999
+  if (countryCode === 'GB' && profile.syntheticLondon) {
+    log('blue', '🏙️  Creating synthetic London locality (GB)...');
+
+    // Find GLA boundary: admin_level=5, name contains "London" or "Greater London"
+    const glaFeature = processedFeatures.find(f =>
+      f.adminLevel === '5' &&
+      f.placetype === 'region' &&
+      /london/i.test(f.name)
+    );
+
+    if (glaFeature) {
+      log('green', `   Found GLA boundary: "${glaFeature.name}" (wofId=${glaFeature.wofId})`);
+
+      // Find all localadmin features inside GLA
+      const londonLocaladmins = processedFeatures.filter(f => {
+        if (f.placetype !== 'localadmin') return false;
+        const pt = point([f.centroid.lon, f.centroid.lat]);
+        try { return booleanPointInPolygon(pt, glaFeature.geometry); }
+        catch (e) { return false; }
+      });
+
+      log('green', `   London boroughs (localadmin inside GLA): ${londonLocaladmins.length}`);
+
+      // Create the synthetic London locality using GLA geometry
+      const syntheticLondon = {
+        wofId: 999999999,
+        osmId: 'synthetic_london',
+        name: 'London',
+        placetype: 'locality',    // Used in GeoJSON body for hierarchy resolution
+        adminLevel: '8',
+        placeTag: 'city',
+        isPointDerived: false,
+        isSynthetic: true,
+        centroid: glaFeature.centroid,
+        bbox: glaFeature.bbox,
+        area: glaFeature.area,
+        geometry: glaFeature.geometry,
+        population: null,
+        wikidata: null,
+        wikipedia: null,
+        nameEn: 'London',
+        nameDe: 'London',
+        namePl: 'Londyn'
+      };
+
+      processedFeatures.push(syntheticLondon);
+      stats.processed++;
+      stats.byPlacetype['locality'] = (stats.byPlacetype['locality'] || 0) + 1;
+
+      // Tag all London boroughs with locality_id pointing to synthetic London
+      // This happens in buildHierarchy via the isSyntheticLondonBased flag
+      for (const la of londonLocaladmins) {
+        la.syntheticLondonId = 999999999;
+      }
+
+      log('green', `   ✅ Synthetic London created (WOF ID 999999999)`);
+      log('blue', `   📍 Centroid: ${syntheticLondon.centroid.lat.toFixed(4)}, ${syntheticLondon.centroid.lon.toFixed(4)}`);
+    } else {
+      log('yellow', '   ⚠️  GLA boundary (admin_level=5, name~London) not found — synthetic London skipped');
+      log('yellow', '       Make sure the England or UK extract includes admin_level=5 boundaries');
+    }
+  }
+
   // PASS 2: Buduj hierarchię
   log('magenta', '🔗 PASS 2: Building hierarchy...');
   
@@ -644,13 +806,15 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
       }
       
       // Utwórz WOF GeoJSON record
+      // For synthetic features (e.g. London): GeoJSON keeps the real placetype (locality)
+      // while SPR uses 'macrocounty' as ghost loader technique
       const wofRecord = {
         type: 'Feature',
         id: fd.wofId,
         properties: {
           'wof:id': fd.wofId,
           'wof:name': fd.name,
-          'wof:placetype': fd.placetype,
+          'wof:placetype': fd.placetype,   // 'locality' for synthetic London (real placetype)
           'wof:parent_id': parentId,
           'wof:hierarchy': [fd.hierarchy],
           'wof:country': options.countryCode || 'PL',
@@ -694,12 +858,17 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
       insertGeojson.run(fd.wofId, JSON.stringify(wofRecord));
       
       // Insert SPR
+      // Ghost loader technique for synthetic features (London):
+      //   SPR placetype = 'macrocounty' so it's loaded AFTER localadmin in PIP workers,
+      //   preventing it from interfering with borough PIP lookups.
+      //   The GeoJSON body still has wof:placetype='locality' for hierarchy resolution.
+      const sprPlacetype = fd.isSynthetic ? 'macrocounty' : fd.placetype;
       const countryValue = fd.placetype === 'country' ? '' : (options.countryCode || 'PL');
       insertSpr.run(
         fd.wofId,
         parentId,
         fd.name,
-        fd.placetype,
+        sprPlacetype,
         countryValue,
         fd.centroid.lat,
         fd.centroid.lon,

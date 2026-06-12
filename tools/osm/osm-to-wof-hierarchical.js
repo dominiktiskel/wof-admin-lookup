@@ -24,6 +24,7 @@ const Database = require('better-sqlite3');
 const turfArea = require('@turf/area').default;
 const { feature, point } = require('@turf/helpers');
 const booleanPointInPolygon = require('@turf/boolean-point-in-polygon').default;
+const pointOnFeature = require('@turf/point-on-feature').default;
 const { program } = require('commander');
 const cliProgress = require('cli-progress');
 
@@ -173,6 +174,39 @@ function calculateCentroid(coords) {
 }
 
 /**
+ * Wyznacza punkt reprezentatywny GWARANTOWANIE leżący wewnątrz poligonu.
+ *
+ * Naiwny centroid (średnia wierzchołków) może wypaść POZA poligonem dla
+ * nieregularnych kształtów (np. dzielnica Prądnik Biały w Krakowie — jej
+ * średnia wierzchołków leży we wsi Zielonki). Taki punkt użyty do
+ * point-in-polygon przy budowaniu hierarchii daje błędnych rodziców.
+ *
+ * Strategia:
+ * 1. Jeśli centroid leży wewnątrz poligonu — użyj go (zachowuje dotychczasowe
+ *    zachowanie w typowych przypadkach).
+ * 2. W przeciwnym razie użyj @turf/point-on-feature (point-on-surface).
+ */
+function calculateInnerPoint(geometry, centroid) {
+  try {
+    if (booleanPointInPolygon(point([centroid.lon, centroid.lat]), geometry)) {
+      return centroid;
+    }
+  } catch (e) {
+    // invalid geometry — fall through to point-on-feature
+  }
+
+  try {
+    const pof = pointOnFeature(feature(geometry));
+    return {
+      lat: pof.geometry.coordinates[1],
+      lon: pof.geometry.coordinates[0]
+    };
+  } catch (e) {
+    return centroid;
+  }
+}
+
+/**
  * Oblicza bounding box
  */
 function calculateBBox(coords) {
@@ -234,8 +268,9 @@ function generateWofId(osmId, adminLevel) {
 
 /**
  * Znajduje parent dla danego feature używając Point-in-Polygon
+ * UWAGA: innerPoint musi leżeć WEWNĄTRZ geometrii dziecka (zob. calculateInnerPoint)
  */
-function findParent(centroid, placetype, potentialParents) {
+function findParent(innerPoint, placetype, potentialParents) {
   // Określ parent placetype
   const placetypeIndex = HIERARCHY_ORDER.indexOf(placetype);
   if (placetypeIndex <= 0) return null; // country nie ma parent
@@ -249,8 +284,8 @@ function findParent(centroid, placetype, potentialParents) {
   
   if (candidates.length === 0) return null;
   
-  // Utwórz punkt z centroidu
-  const pt = point([centroid.lon, centroid.lat]);
+  // Utwórz punkt z punktu wewnętrznego
+  const pt = point([innerPoint.lon, innerPoint.lat]);
   
   // Sort smallest-area-first to prefer the most specific containing polygon.
   // This matches ONS tool behaviour and prevents large national boundaries from
@@ -298,8 +333,8 @@ function buildHierarchy(featureData, allFeatures) {
   let currentPlacetype = featureData.placetype;
   
   while (currentFeature && currentPlacetype) {
-    // Znajdź parent
-    const parent = findParent(currentFeature.centroid, currentPlacetype, allFeatures);
+    // Znajdź parent (używamy punktu wewnętrznego, nie naiwnego centroidu)
+    const parent = findParent(currentFeature.innerPoint || currentFeature.centroid, currentPlacetype, allFeatures);
     
     if (!parent) break;
 
@@ -471,6 +506,7 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     
     const coords = extractAllCoordinates(geometry);
     const centroid = calculateCentroid(coords);
+    const innerPoint = calculateInnerPoint(geometry, centroid);
     const bbox = calculateBBox(coords);
     const area = calculateArea(geometry);
     
@@ -495,6 +531,7 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
       placeTag,
       isPointDerived,
       centroid,
+      innerPoint,
       bbox,
       area,
       geometry,
@@ -536,7 +573,7 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     if (loc.placetype !== 'locality' || !loc.isPointDerived) continue;
     if (!loc.placeTag || !UPGRADE_PLACE_TAGS.includes(loc.placeTag)) continue;
     
-    const pt = point([loc.centroid.lon, loc.centroid.lat]);
+    const pt = point([loc.innerPoint.lon, loc.innerPoint.lat]);
     const matchingLocaladmin = localadmins.find(la => {
       try { return booleanPointInPolygon(pt, la.geometry); }
       catch (e) { return false; }
@@ -554,7 +591,7 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
   // create a synthetic locality if a place=city/town point exists inside.
   // Only city/town -- villages have their own admin_level=8 boundaries in OSM.
   for (const la of localadmins) {
-    const laPt = point([la.centroid.lon, la.centroid.lat]);
+    const laPt = point([la.innerPoint.lon, la.innerPoint.lat]);
     
     const coveredByLocality = processedFeatures.some(f => {
       if (f.placetype !== 'locality') return false;
@@ -571,7 +608,7 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
       UPGRADE_PLACE_TAGS.includes(f.placeTag) &&
       (() => {
         try {
-          return booleanPointInPolygon(point([f.centroid.lon, f.centroid.lat]), la.geometry);
+          return booleanPointInPolygon(point([f.innerPoint.lon, f.innerPoint.lat]), la.geometry);
         } catch (e) { return false; }
       })()
     );
@@ -591,6 +628,7 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
         placeTag: la.placeTag,
         isPointDerived: false,
         centroid: la.centroid,
+        innerPoint: la.innerPoint,
         bbox: la.bbox,
         area: la.area,
         geometry: la.geometry,
@@ -638,7 +676,7 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
       // Find all localadmin features inside GLA
       const londonLocaladmins = processedFeatures.filter(f => {
         if (f.placetype !== 'localadmin') return false;
-        const pt = point([f.centroid.lon, f.centroid.lat]);
+        const pt = point([f.innerPoint.lon, f.innerPoint.lat]);
         try { return booleanPointInPolygon(pt, glaFeature.geometry); }
         catch (e) { return false; }
       });
@@ -656,6 +694,7 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
         isPointDerived: false,
         isSynthetic: true,
         centroid: glaFeature.centroid,
+        innerPoint: glaFeature.innerPoint,
         bbox: glaFeature.bbox,
         area: glaFeature.area,
         geometry: glaFeature.geometry,

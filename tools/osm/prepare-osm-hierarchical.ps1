@@ -219,13 +219,17 @@ if (-not (Test-Path (Join-Path $scriptDir ".." "node_modules"))) {
     Pop-Location
 }
 
-# Sprawdź czy potrzebujemy @turf/boolean-point-in-polygon
-$packageJson = Get-Content (Join-Path $scriptDir "package.json") | ConvertFrom-Json
-if (-not ($packageJson.dependencies.'@turf/boolean-point-in-polygon')) {
-    Write-Host "      Installing additional dependency: @turf/boolean-point-in-polygon" -ForegroundColor Cyan
-    Push-Location $scriptDir
-    npm install --save @turf/boolean-point-in-polygon
-    Pop-Location
+# Sprawdź czy potrzebujemy dodatkowych zależności @turf
+# (package.json jest w nadrzędnym katalogu tools)
+$toolsDir = Join-Path $scriptDir ".."
+$packageJson = Get-Content (Join-Path $toolsDir "package.json") | ConvertFrom-Json
+foreach ($turfDep in @('@turf/boolean-point-in-polygon', '@turf/point-on-feature')) {
+    if (-not ($packageJson.dependencies.$turfDep)) {
+        Write-Host "      Installing additional dependency: $turfDep" -ForegroundColor Cyan
+        Push-Location $toolsDir
+        npm install --save $turfDep
+        Pop-Location
+    }
 }
 
 try {

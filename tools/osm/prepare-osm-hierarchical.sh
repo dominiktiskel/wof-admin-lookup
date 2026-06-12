@@ -274,13 +274,17 @@ if [ ! -d "$SCRIPT_DIR/../node_modules" ]; then
     cd - > /dev/null
 fi
 
-# Sprawdź czy potrzebujemy @turf/boolean-point-in-polygon
-if ! grep -q "@turf/boolean-point-in-polygon" "$SCRIPT_DIR/package.json"; then
-    echo -e "${CYAN}      Installing additional dependency: @turf/boolean-point-in-polygon${NC}"
-    cd "$SCRIPT_DIR"
-    npm install --save @turf/boolean-point-in-polygon
-    cd - > /dev/null
-fi
+# Sprawdź czy potrzebujemy dodatkowych zależności @turf
+# (package.json jest w nadrzędnym katalogu tools)
+TOOLS_PACKAGE_JSON="$SCRIPT_DIR/../package.json"
+for TURF_DEP in "@turf/boolean-point-in-polygon" "@turf/point-on-feature"; do
+    if ! grep -q "$TURF_DEP" "$TOOLS_PACKAGE_JSON"; then
+        echo -e "${CYAN}      Installing additional dependency: $TURF_DEP${NC}"
+        cd "$SCRIPT_DIR/.."
+        npm install --save "$TURF_DEP"
+        cd - > /dev/null
+    fi
+done
 
 # Uruchom konwersję HIERARCHICZNĄ
 echo -e "${CYAN}      This may take a while - building complete hierarchy...${NC}"

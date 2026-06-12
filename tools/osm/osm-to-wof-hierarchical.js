@@ -269,37 +269,45 @@ function generateWofId(osmId, adminLevel) {
 /**
  * Znajduje parent dla danego feature używając Point-in-Polygon
  * UWAGA: innerPoint musi leżeć WEWNĄTRZ geometrii dziecka (zob. calculateInnerPoint)
+ *
+ * Jeśli na bezpośrednio wyższym poziomie nie ma kandydata zawierającego punkt,
+ * próbuje kolejnych wyższych poziomów (np. locality → localadmin → county → ...).
+ * To kluczowe dla miast na prawach powiatu (Kraków, Bytom, ...), które w OSM
+ * nie mają relacji admin_level=7 (gmina = miasto = powiat) — bez tego fallbacku
+ * hierarchia urywała się na locality i county/region/country zostawały -1.
  */
 function findParent(innerPoint, placetype, potentialParents) {
-  // Określ parent placetype
   const placetypeIndex = HIERARCHY_ORDER.indexOf(placetype);
   if (placetypeIndex <= 0) return null; // country nie ma parent
-  
-  const parentPlacetype = HIERARCHY_ORDER[placetypeIndex - 1];
-  
-  // Filtruj tylko odpowiednie placetype; skip synthetic features that don't have real geometry
-  const candidates = potentialParents.filter(p =>
-    p.placetype === parentPlacetype && !p.isSynthetic
-  );
-  
-  if (candidates.length === 0) return null;
   
   // Utwórz punkt z punktu wewnętrznego
   const pt = point([innerPoint.lon, innerPoint.lat]);
   
-  // Sort smallest-area-first to prefer the most specific containing polygon.
-  // This matches ONS tool behaviour and prevents large national boundaries from
-  // "stealing" parent assignments that should go to smaller local boundaries.
-  const sortedCandidates = candidates.slice().sort((a, b) => a.area - b.area);
-  
-  for (const candidate of sortedCandidates) {
-    try {
-      if (booleanPointInPolygon(pt, candidate.geometry)) {
-        return candidate;
+  // Iteruj po kolejnych wyższych poziomach aż znajdziemy zawierający poligon
+  for (let parentIndex = placetypeIndex - 1; parentIndex >= 0; parentIndex--) {
+    const parentPlacetype = HIERARCHY_ORDER[parentIndex];
+    
+    // Filtruj tylko odpowiednie placetype; skip synthetic features that don't have real geometry
+    const candidates = potentialParents.filter(p =>
+      p.placetype === parentPlacetype && !p.isSynthetic
+    );
+    
+    if (candidates.length === 0) continue;
+    
+    // Sort smallest-area-first to prefer the most specific containing polygon.
+    // This matches ONS tool behaviour and prevents large national boundaries from
+    // "stealing" parent assignments that should go to smaller local boundaries.
+    const sortedCandidates = candidates.slice().sort((a, b) => a.area - b.area);
+    
+    for (const candidate of sortedCandidates) {
+      try {
+        if (booleanPointInPolygon(pt, candidate.geometry)) {
+          return candidate;
+        }
+      } catch (e) {
+        // Skip invalid geometries
+        continue;
       }
-    } catch (e) {
-      // Skip invalid geometries
-      continue;
     }
   }
   
@@ -837,13 +845,17 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     for (let i = 0; i < featuresWithHierarchy.length; i++) {
       const fd = featuresWithHierarchy[i];
       
-      // Określ parent_id (pierwszy wyższy poziom w hierarchii)
+      // Określ parent_id: najbliższy wyższy poziom obecny w hierarchii
+      // (z pominięciem brakujących poziomów, np. localadmin dla miast na prawach powiatu)
       const placetypeIndex = HIERARCHY_ORDER.indexOf(fd.placetype);
       let parentId = -1;
       
-      if (placetypeIndex > 0) {
-        const parentPlacetype = HIERARCHY_ORDER[placetypeIndex - 1];
-        parentId = fd.hierarchy[`${parentPlacetype}_id`] || -1;
+      for (let pi = placetypeIndex - 1; pi >= 0; pi--) {
+        const candidateId = fd.hierarchy[`${HIERARCHY_ORDER[pi]}_id`];
+        if (candidateId && candidateId !== -1) {
+          parentId = candidateId;
+          break;
+        }
       }
       
       // Utwórz WOF GeoJSON record

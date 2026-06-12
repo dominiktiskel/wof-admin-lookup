@@ -15,3 +15,4 @@ tools/ons-uk/output/
 # OSM data files
 tools/osm/*.pbf
 tools/osm/*.geojson
+tools/osm/*.db

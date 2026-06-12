@@ -11,3 +11,7 @@ coverage/
 # Output directories for generated WOF databases
 tools/ign-spain/output/
 tools/ons-uk/output/
+
+# OSM data files
+tools/osm/*.pbf
+tools/osm/*.geojson

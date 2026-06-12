@@ -178,10 +178,16 @@ else
     
     # Filtruj zarówno granice administracyjne jak i miejscowości (place=*)
     # W UK wiele miejscowości jest oznaczonych tylko jako place=*, nie jako boundary
+    #
+    # Zapis do pliku tymczasowego + mv po sukcesie: jeśli osmium padnie w trakcie
+    # (np. "PBF error: unexpected EOF" na uciętym downloadzie), nie zostawiamy
+    # częściowego pliku, który kolejny przebieg pominąłby przez "File exists".
+    BOUNDARIES_PBF_TMP="${BOUNDARIES_PBF}.tmp.osm.pbf"
     osmium tags-filter "$PBF_FILE" \
         r/boundary=administrative \
         nw/place=city,town,village,hamlet,suburb,neighbourhood,quarter,isolated_dwelling \
-        -o "$BOUNDARIES_PBF" --overwrite
+        -o "$BOUNDARIES_PBF_TMP" --overwrite
+    mv "$BOUNDARIES_PBF_TMP" "$BOUNDARIES_PBF"
     
     echo -e "${GREEN}      Filtered: $BOUNDARIES_PBF${NC}"
 fi
@@ -248,8 +254,19 @@ else
     # Cleanup temp files
     rm -f "$GEOJSON_POLYGONS" "$GEOJSON_POINTS"
     
+    # Sanity check: pusty GeoJSON oznacza zepsuty plik pośredni (np. po nieudanym
+    # filtrowaniu) - przerwij zamiast budować pustą bazę SQLite
+    FEATURE_COUNT=$(node -e "const g=JSON.parse(require('fs').readFileSync('$GEOJSON_FILE','utf8')); console.log((g.features||[]).length)")
+    if [ "$FEATURE_COUNT" -eq 0 ]; then
+        rm -f "$GEOJSON_FILE"
+        echo -e "${RED}      ERROR: GeoJSON contains 0 features!${NC}"
+        echo -e "${YELLOW}      The filtered PBF is likely corrupted or empty.${NC}"
+        echo -e "${YELLOW}      Delete it and re-run: rm \"$BOUNDARIES_PBF\"${NC}"
+        exit 1
+    fi
+    
     SIZE=$(du -h "$GEOJSON_FILE" | cut -f1)
-    echo -e "${GREEN}      Created: $GEOJSON_FILE ($SIZE)${NC}"
+    echo -e "${GREEN}      Created: $GEOJSON_FILE ($SIZE, $FEATURE_COUNT features)${NC}"
 fi
 
 # Krok 4: Konwertuj do WOF SQLite Z HIERARCHIĄ

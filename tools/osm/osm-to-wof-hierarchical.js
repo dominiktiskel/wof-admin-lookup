@@ -563,12 +563,58 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     log('yellow', `   Filtered statistical subregions: ${stats.filteredSubregions}`);
   }
   
-  // POST-PASS 1: Upgrade point-derived localities and fill gaps
-  log('magenta', '\n🔧 Post-processing: upgrading locality geometries...');
+  // POST-PASS 1: Deduplicate and upgrade point-derived localities
+  log('magenta', '\n🔧 Post-processing: deduplicating and upgrading locality geometries...');
   
   const localadmins = processedFeatures.filter(f => f.placetype === 'localadmin');
   let upgradedCount = 0;
   let createdCount = 0;
+  
+  // Step A0: Deduplikacja punktów place=* przykrytych prawdziwym poligonem
+  // granicy o tej samej nazwie i placetype (np. node place=city "Kraków"
+  // wewnątrz relacji admin_level=8 "Kraków"). Bez tego każde takie
+  // miasto/wieś/osiedle ma w bazie dwa rekordy o różnych WOF ID i PIP
+  // wybiera między nimi arbitralnie (niestabilne ID między buildami).
+  const DEDUP_PLACETYPES = ['locality', 'neighbourhood'];
+  const normalizeName = (s) => (s || '').trim().toLowerCase();
+  
+  const realByPlacetypeAndName = new Map();
+  for (const f of processedFeatures) {
+    if (!DEDUP_PLACETYPES.includes(f.placetype) || f.isPointDerived) continue;
+    const key = `${f.placetype}|${normalizeName(f.name)}`;
+    if (!realByPlacetypeAndName.has(key)) realByPlacetypeAndName.set(key, []);
+    realByPlacetypeAndName.get(key).push(f);
+  }
+  
+  const duplicatePoints = new Set();
+  for (const loc of processedFeatures) {
+    if (!DEDUP_PLACETYPES.includes(loc.placetype) || !loc.isPointDerived) continue;
+    
+    const candidates = realByPlacetypeAndName.get(`${loc.placetype}|${normalizeName(loc.name)}`);
+    if (!candidates) continue;
+    
+    const pt = point([loc.innerPoint.lon, loc.innerPoint.lat]);
+    const twin = candidates.find(rl => {
+      try { return booleanPointInPolygon(pt, rl.geometry); }
+      catch (e) { return false; }
+    });
+    if (!twin) continue;
+    
+    // Przenieś metadane z punktu, jeśli poligon granicy ich nie ma
+    if (!twin.population && loc.population) twin.population = loc.population;
+    if (!twin.wikidata && loc.wikidata) twin.wikidata = loc.wikidata;
+    if (!twin.wikipedia && loc.wikipedia) twin.wikipedia = loc.wikipedia;
+    
+    duplicatePoints.add(loc);
+    stats.byPlacetype[loc.placetype]--;
+    stats.processed--;
+  }
+  
+  if (duplicatePoints.size > 0) {
+    const kept = processedFeatures.filter(f => !duplicatePoints.has(f));
+    processedFeatures.length = 0;
+    for (const f of kept) processedFeatures.push(f);
+  }
   
   // Step A: For place=city/town point-derived localities, replace the tiny ~100m
   // polygon with the containing localadmin's polygon for proper PIP coverage.
@@ -576,6 +622,27 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
   // covers many villages, so upgrading a village point to the gmina polygon would
   // create an oversized locality that swallows neighbouring villages.
   const UPGRADE_PLACE_TAGS = ['city', 'town'];
+  
+  // Po deduplikacji: prawdziwe (graniczne) poligony locality, do sprawdzania
+  // czy upgrade do poligonu gminy nie połknąłby istniejących miejscowości
+  const realLocalities = processedFeatures.filter(f => f.placetype === 'locality' && !f.isPointDerived);
+  const containsRealLocalityCache = new Map();
+  
+  function localadminContainsRealLocality(la) {
+    if (containsRealLocalityCache.has(la)) return containsRealLocalityCache.get(la);
+    
+    // Szybki pre-check po bbox (format: "minLon,minLat,maxLon,maxLat")
+    const [minLon, minLat, maxLon, maxLat] = String(la.bbox).split(',').map(Number);
+    const result = realLocalities.some(rl => {
+      if (rl.innerPoint.lon < minLon || rl.innerPoint.lon > maxLon ||
+          rl.innerPoint.lat < minLat || rl.innerPoint.lat > maxLat) return false;
+      try { return booleanPointInPolygon(point([rl.innerPoint.lon, rl.innerPoint.lat]), la.geometry); }
+      catch (e) { return false; }
+    });
+    
+    containsRealLocalityCache.set(la, result);
+    return result;
+  }
   
   for (const loc of processedFeatures) {
     if (loc.placetype !== 'locality' || !loc.isPointDerived) continue;
@@ -588,6 +655,11 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     });
     
     if (matchingLocaladmin) {
+      // Nie podnoś punktu do poligonu gminy, jeśli gmina zawiera już prawdziwe
+      // poligony locality - przewymiarowany poligon połknąłby je w PIP
+      // (np. punkt place=town Wieliczki vs wsie w gminie miejsko-wiejskiej)
+      if (localadminContainsRealLocality(matchingLocaladmin)) continue;
+      
       loc.geometry = matchingLocaladmin.geometry;
       loc.area = matchingLocaladmin.area;
       loc.bbox = matchingLocaladmin.bbox;
@@ -653,8 +725,9 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
     }
   }
   
-  log('green', `   Upgraded point localities:    ${upgradedCount}`);
-  log('green', `   Created synthetic localities: ${createdCount}`);
+  log('green', `   Removed duplicate place points: ${duplicatePoints.size}`);
+  log('green', `   Upgraded point localities:      ${upgradedCount}`);
+  log('green', `   Created synthetic localities:   ${createdCount}`);
   log('green', '');
 
   // POST-PASS 1 (GB only): Create synthetic "London" locality

@@ -113,11 +113,24 @@ if (Test-Path $BoundariesPbf) {
         
         # Filtruj zarówno granice administracyjne jak i miejscowości (place=*)
         # W UK wiele miejscowości jest oznaczonych tylko jako place=*, nie jako boundary
+        #
+        # Zapis do pliku tymczasowego + rename po sukcesie: jeśli osmium padnie w trakcie
+        # (np. "PBF error: unexpected EOF" na uciętym downloadzie), nie zostawiamy
+        # częściowego pliku, który kolejny przebieg pominąłby przez "File exists".
+        $BoundariesPbfTmp = "$BoundariesPbf.tmp.osm.pbf"
         & osmium tags-filter $PbfFile `
             "r/boundary=administrative" `
             "nw/place=city,town,village,hamlet,suburb,neighbourhood,quarter,isolated_dwelling" `
-            -o $BoundariesPbf --overwrite
+            -o $BoundariesPbfTmp --overwrite
         
+        if ($LASTEXITCODE -ne 0) {
+            if (Test-Path $BoundariesPbfTmp) { Remove-Item $BoundariesPbfTmp -Force }
+            Write-Host "      ERROR: osmium failed (exit code $LASTEXITCODE)" -ForegroundColor Red
+            Write-Host "      The source PBF may be corrupted - delete it and re-run: rm $PbfFile" -ForegroundColor Yellow
+            exit 1
+        }
+        
+        Move-Item $BoundariesPbfTmp $BoundariesPbf -Force
         Write-Host "      Filtered: $BoundariesPbf" -ForegroundColor Green
     } catch {
         Write-Host "      ERROR: osmium failed" -ForegroundColor Red
@@ -194,8 +207,19 @@ if (-not (Test-Path $GeoJsonFile)) {
         if (Test-Path $GeoJsonPolygons) { Remove-Item $GeoJsonPolygons -Force }
         if (Test-Path $GeoJsonPoints) { Remove-Item $GeoJsonPoints -Force }
         
+        # Sanity check: pusty GeoJSON oznacza zepsuty plik pośredni (np. po nieudanym
+        # filtrowaniu) - przerwij zamiast budować pustą bazę SQLite
+        $featureCount = [int](& node -e "const g=JSON.parse(require('fs').readFileSync('$($GeoJsonFile -replace '\\','/')','utf8')); console.log((g.features||[]).length)")
+        if ($featureCount -eq 0) {
+            Remove-Item $GeoJsonFile -Force
+            Write-Host "      ERROR: GeoJSON contains 0 features!" -ForegroundColor Red
+            Write-Host "      The filtered PBF is likely corrupted or empty." -ForegroundColor Yellow
+            Write-Host "      Delete it and re-run: rm $BoundariesPbf" -ForegroundColor Yellow
+            exit 1
+        }
+        
         $size = (Get-Item $GeoJsonFile).Length / 1MB
-        Write-Host "      Created: $GeoJsonFile ($([math]::Round($size, 2)) MB)" -ForegroundColor Green
+        Write-Host "      Created: $GeoJsonFile ($([math]::Round($size, 2)) MB, $featureCount features)" -ForegroundColor Green
     } catch {
         Write-Host "      ERROR: ogr2ogr failed" -ForegroundColor Red
         Write-Host "      $($_.Exception.Message)" -ForegroundColor Red

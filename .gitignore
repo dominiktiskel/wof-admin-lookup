@@ -1,7 +1,7 @@
 node_modules/
 npm-debug.log*
 .npm
-data/
+/data/
 *.log
 .DS_Store
 Thumbs.db

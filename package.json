@@ -6,6 +6,12 @@
     "node": ">=10.0.0"
   },
   "main": "index.js",
+  "files": [
+    "index.js",
+    "schema.js",
+    "src",
+    "bin"
+  ],
   "scripts": {
     "test": "./bin/units",
     "testDependencyMode": "node test/pip/testDependencyMode.js",

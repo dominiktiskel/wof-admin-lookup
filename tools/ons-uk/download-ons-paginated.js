@@ -48,6 +48,14 @@ const DATASETS = {
         name: 'Built-up Areas',
         url: 'https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/BUA_2022_GB/FeatureServer/0/query',
         pageSize: 500  // Server supports up to 1000, using 500 for reliability
+    },
+    metrocounties: {
+        name: 'Metropolitan Counties (E11)',
+        // Upper Tier Local Authorities dataset contains metro counties (E11 codes);
+        // E10 counties and unitary authorities are covered by other datasets, so filter to E11 only
+        url: 'https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Upper_Tier_Local_Authorities_December_2022_Boundaries_UK_BFC/FeatureServer/0/query',
+        where: "UTLA22CD LIKE 'E11%'",
+        pageSize: 2  // Only 6 features, but full-resolution geometries are large
     }
 };
 
@@ -125,8 +133,8 @@ function fetchWithRetry(url, maxRetries = 5, timeout = 120000) {
 }
 
 // Get total feature count
-async function getFeatureCount(baseUrl) {
-    const url = `${baseUrl}?where=1%3D1&returnCountOnly=true&f=json`;
+async function getFeatureCount(baseUrl, where) {
+    const url = `${baseUrl}?where=${encodeURIComponent(where || '1=1')}&returnCountOnly=true&f=json`;
     log('gray', `    Fetching feature count...`);
     const result = await fetchWithRetry(url);
     
@@ -144,8 +152,8 @@ async function getFeatureCount(baseUrl) {
 }
 
 // Download a single page of features (offset-based)
-async function downloadPage(baseUrl, offset, pageSize) {
-    const url = `${baseUrl}?outFields=*&where=1%3D1&f=geojson&resultOffset=${offset}&resultRecordCount=${pageSize}`;
+async function downloadPage(baseUrl, offset, pageSize, where) {
+    const url = `${baseUrl}?outFields=*&where=${encodeURIComponent(where || '1=1')}&f=geojson&resultOffset=${offset}&resultRecordCount=${pageSize}`;
     return await fetchWithRetry(url);
 }
 
@@ -240,7 +248,7 @@ async function downloadDataset(datasetKey, outputFile) {
         }
     } else {
         // Standard offset-based pagination
-        const totalCount = await getFeatureCount(dataset.url);
+        const totalCount = await getFeatureCount(dataset.url, dataset.where);
         const unknownTotal = totalCount === -1;
         
         if (unknownTotal) {
@@ -269,7 +277,7 @@ async function downloadDataset(datasetKey, outputFile) {
             process.stdout.write(`${colors.gray}    Page ${pageNum}/${totalPages} (offset ${offset})...${colors.reset}`);
             
             try {
-                const page = await downloadPage(dataset.url, offset, pageSize);
+                const page = await downloadPage(dataset.url, offset, pageSize, dataset.where);
                 const features = page.features || [];
                 
                 // If we got no features and total is unknown, we're done

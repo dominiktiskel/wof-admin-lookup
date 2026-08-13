@@ -86,11 +86,13 @@ ONS uses alphanumeric codes to identify administrative areas. The converter maps
 |----------------|-------------|---------------|
 | E92, W92, S92, N92 | Countries | `country` |
 | E12, E13 | English Regions | `region` |
-| E10, E11, W06 | Counties | `county` |
-| E06, E07, E08, E09, S12, N09 | Local Authorities | `localadmin` |
-| E34, W37, S02 | Built-up Areas | `locality` |
+| E10 | Counties | `county` |
+| E11 | Metropolitan Counties (separate download, filtered from Upper Tier LAs) | `county` |
+| E06, E07, E08, E09, W06, S12, N09 | Local Authorities | `localadmin` |
+| E63, W45, S45, K08 | Built-up Areas 2022 | `locality` |
+| (OSM place=suburb/neighbourhood/quarter) | OSM neighbourhoods (optional) | `neighbourhood` |
 
-**WOF ID Generation**: ONS codes are hashed to numeric IDs starting with `8` (to avoid collision with OSM-generated IDs that start with `9`).
+**WOF ID Generation**: ONS codes are hashed to numeric IDs starting with `8` (to avoid collision with OSM-generated IDs that start with `9`). OSM-sourced neighbourhoods get IDs starting with `7`.
 
 ## Output
 

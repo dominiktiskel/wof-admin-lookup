@@ -19,8 +19,12 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const turfArea = require('@turf/area').default;
-const { feature, point } = require('@turf/helpers');
+const { feature, point, featureCollection } = require('@turf/helpers');
 const booleanPointInPolygon = require('@turf/boolean-point-in-polygon').default;
+const pointOnFeature = require('@turf/point-on-feature').default;
+const turfVoronoi = require('@turf/voronoi').default;
+const turfIntersect = require('@turf/intersect').default;
+const turfDifference = require('@turf/difference').default;
 const { program } = require('commander');
 const cliProgress = require('cli-progress');
 
@@ -40,7 +44,6 @@ const ONS_CODE_TO_PLACETYPE = {
   // County: E10 (ceremonial counties), E11 (metropolitan counties)
   'E10': 'county',
   'E11': 'county',
-  'W06': 'county',  // Welsh preserved counties
   
   // Local Authority District: E06-E09 (various types of councils)
   'E06': 'localadmin',  // Unitary Authority
@@ -59,7 +62,10 @@ const ONS_CODE_TO_PLACETYPE = {
 };
 
 // Hierarchia poziomów (od najwyższego do najniższego)
-const HIERARCHY_ORDER = ['country', 'region', 'county', 'localadmin', 'locality'];
+const HIERARCHY_ORDER = ['country', 'region', 'county', 'localadmin', 'locality', 'neighbourhood'];
+
+// WOF ID syntetycznego Londynu (ghost loader)
+const SYNTHETIC_LONDON_ID = 999999999;
 
 // Kolory dla logów
 const colors = {
@@ -115,6 +121,39 @@ function calculateCentroid(coords) {
     lat: sum.lat / coords.length,
     lon: sum.lon / coords.length
   };
+}
+
+/**
+ * Wyznacza punkt leżący WEWNĄTRZ geometrii.
+ *
+ * Naiwny centroid (średnia wierzchołków) może wypaść poza poligonem dla
+ * nieregularnych kształtów — taki punkt użyty do point-in-polygon przy
+ * budowaniu hierarchii daje błędnych rodziców.
+ *
+ * Strategia:
+ * 1. Jeśli centroid leży wewnątrz poligonu — użyj go.
+ * 2. W przeciwnym razie użyj @turf/point-on-feature (point-on-surface).
+ */
+function calculateInnerPoint(geometry, centroid) {
+  if (!geometry) return centroid;
+
+  try {
+    if (booleanPointInPolygon(point([centroid.lon, centroid.lat]), geometry)) {
+      return centroid;
+    }
+  } catch (e) {
+    // invalid geometry — fall through to point-on-feature
+  }
+
+  try {
+    const pof = pointOnFeature(feature(geometry));
+    return {
+      lat: pof.geometry.coordinates[1],
+      lon: pof.geometry.coordinates[0]
+    };
+  } catch (e) {
+    return centroid;
+  }
 }
 
 /**
@@ -250,6 +289,7 @@ function extractOnsCode(props) {
   return props.CTRY23CD ||  // Countries 2023
          props.RGN23CD ||   // Regions 2023
          props.CTYUA23CD || // Counties 2023
+         props.UTLA22CD ||  // Upper Tier LAs 2022 (metropolitan counties E11)
          props.LAD24CD ||   // LAD 2024
          props.BUA22CD ||   // Built-up Areas 2022
          props.code ||
@@ -264,6 +304,7 @@ function extractName(props) {
   return props.CTRY23NM ||
          props.RGN23NM ||
          props.CTYUA23NM ||
+         props.UTLA22NM ||
          props.LAD24NM ||
          props.BUA22NM ||
          props.name ||
@@ -301,87 +342,411 @@ function loadGreaterLondonGeometry(filePath) {
 }
 
 /**
- * Znajduje parent dla danego feature używając Point-in-Polygon
+ * Ekstrahuje tag place=* z properties GeoJSON wygenerowanego przez ogr2ogr.
+ * Warstwa points ma kolumnę `place`, warstwa multipolygons trzyma tag
+ * w hstore `other_tags` ("place"=>"suburb").
  */
-function findParent(centroid, placetype, potentialParents) {
-  const placetypeIndex = HIERARCHY_ORDER.indexOf(placetype);
-  if (placetypeIndex <= 0) return null; // country nie ma parent
+function extractOsmPlaceTag(props) {
+  if (props.place) return props.place;
   
-  const parentPlacetype = HIERARCHY_ORDER[placetypeIndex - 1];
-  
-  // Filtruj tylko odpowiednie placetype i pomiń syntetyczne features bez geometry
-  const candidates = potentialParents.filter(p => 
-    p.placetype === parentPlacetype && 
-    p.geometry !== null && 
-    !p.isSynthetic
-  );
-  
-  if (candidates.length === 0) return null;
-  
-  // Utwórz punkt z centroidu
-  const pt = point([centroid.lon, centroid.lat]);
-  
-  // Znajdź pierwszy polygon który zawiera punkt
-  // Sortuj po area (rosnąco) aby preferować najmniejszy zawierający polygon
-  const sortedCandidates = candidates.sort((a, b) => a.area - b.area);
-  
-  for (const candidate of sortedCandidates) {
-    try {
-      if (booleanPointInPolygon(pt, candidate.geometry)) {
-        return candidate;
-      }
-    } catch (e) {
-      // Skip invalid geometries
-      continue;
-    }
+  if (typeof props.other_tags === 'string') {
+    const match = props.other_tags.match(/"place"=>"([^"]+)"/);
+    if (match) return match[1];
   }
   
   return null;
 }
 
 /**
+ * Generuje numeryczny WOF ID dla feature z OSM.
+ * Prefix 7 - brak kolizji z ONS (prefix 8) i narzędziem OSM (prefix 9).
+ * Przy kolizji hasha wewnątrz zbioru inkrementuje aż do wolnego ID.
+ */
+function osmIdToWofId(osmId, usedIds) {
+  const str = String(osmId);
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash = hash & hash;
+  }
+  
+  let id = parseInt(`7${(Math.abs(hash) % 100000000).toString().padStart(8, '0')}`);
+  while (usedIds.has(id)) id++;
+  usedIds.add(id);
+  return id;
+}
+
+/**
+ * Wczytuje dzielnice (place=suburb/neighbourhood/quarter) z GeoJSON
+ * wygenerowanego przez extract-osm-neighbourhoods.sh.
+ */
+function loadOsmNeighbourhoods(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    log('yellow', `⚠️  OSM neighbourhoods file not found: ${filePath}`);
+    return [];
+  }
+  
+  const ACCEPTED_PLACE_TAGS = ['suburb', 'neighbourhood', 'quarter'];
+  
+  const features = loadFeaturesFromFile(filePath);
+  const raw = [];
+  
+  for (let i = 0; i < features.length; i++) {
+    const f = features[i];
+    const props = f.properties || {};
+    
+    const name = props.name;
+    if (!name) continue;
+    
+    const placeTag = extractOsmPlaceTag(props);
+    if (!placeTag || !ACCEPTED_PLACE_TAGS.includes(placeTag)) continue;
+    
+    const geometry = f.geometry;
+    if (!geometry || !geometry.coordinates) continue;
+    if (!['Point', 'Polygon', 'MultiPolygon'].includes(geometry.type)) continue;
+    
+    const osmId = props['@id'] || props.osm_id || props.osm_way_id || `osm_nbr_${i}`;
+    
+    raw.push({ osmId, name, placeTag, geometry });
+  }
+  
+  return raw;
+}
+
+/**
+ * Przetwarza dzielnice z OSM na features WOF (placetype=neighbourhood).
+ *
+ * - Features z poligonem: użyte wprost (src:geom = 'osm').
+ * - Features punktowe: przybliżony polygon Voronoi przycięty do zawierającego
+ *   localadmin (src:geom = 'osm-voronoi') - bez tego dzielnice-nody nie byłyby
+ *   trafiane przez point-in-polygon.
+ *
+ * Modyfikuje processedFeatures i stats in-place.
+ */
+function processOsmNeighbourhoods(rawNeighbourhoods, processedFeatures, stats) {
+  const normalizeName = (n) => String(n).toLowerCase().trim();
+  
+  const usedIds = new Set(processedFeatures.map(f => f.wofId));
+  usedIds.add(SYNTHETIC_LONDON_ID);
+  
+  // Indeks localadmin z bbox do szybkiego przypisywania punktów
+  const localadmins = processedFeatures
+    .filter(f => f.placetype === 'localadmin' && f.geometry)
+    .map(la => {
+      const [minLon, minLat, maxLon, maxLat] = String(la.bbox).split(',').map(Number);
+      return { la, minLon, minLat, maxLon, maxLat };
+    });
+  
+  const polygonRaw = rawNeighbourhoods.filter(r => r.geometry.type !== 'Point');
+  const pointRaw = rawNeighbourhoods.filter(r => r.geometry.type === 'Point');
+  
+  log('blue', `   Polygons: ${polygonRaw.length}, points: ${pointRaw.length}`);
+  
+  let added = 0;
+  
+  // 1. Dzielnice z prawdziwym poligonem
+  const polygonRecords = [];
+  for (const raw of polygonRaw) {
+    const coords = extractAllCoordinates(raw.geometry);
+    if (coords.length < 3) continue;
+    
+    const centroid = calculateCentroid(coords);
+    const innerPoint = calculateInnerPoint(raw.geometry, centroid);
+    
+    const record = {
+      wofId: osmIdToWofId(raw.osmId, usedIds),
+      onsCode: `OSM_${raw.osmId}`,
+      name: raw.name,
+      placetype: 'neighbourhood',
+      centroid,
+      innerPoint,
+      bbox: calculateBBox(coords),
+      area: calculateArea(raw.geometry),
+      geometry: raw.geometry,
+      nameEn: null,
+      srcGeom: 'osm'
+    };
+    
+    polygonRecords.push(record);
+    processedFeatures.push(record);
+    added++;
+  }
+  
+  // Indeks poligonów po nazwie do deduplikacji node+polygon tej samej dzielnicy
+  const polygonsByName = new Map();
+  for (const rec of polygonRecords) {
+    const key = normalizeName(rec.name);
+    if (!polygonsByName.has(key)) polygonsByName.set(key, []);
+    polygonsByName.get(key).push(rec);
+  }
+  
+  // 2. Dzielnice punktowe: dedup + grupowanie po localadmin
+  const groups = new Map();  // localadmin feature -> [{raw, lon, lat}]
+  let dedupedPoints = 0;
+  let orphanPoints = 0;
+  
+  for (const raw of pointRaw) {
+    const [lon, lat] = raw.geometry.coordinates;
+    const pt = point([lon, lat]);
+    
+    // Skip node jeśli istnieje polygon o tej samej nazwie zawierający punkt
+    const twins = polygonsByName.get(normalizeName(raw.name));
+    if (twins && twins.some(rec => {
+      try { return booleanPointInPolygon(pt, rec.geometry); }
+      catch (e) { return false; }
+    })) {
+      dedupedPoints++;
+      continue;
+    }
+    
+    // Znajdź zawierający localadmin (bbox prefilter + PiP)
+    let containing = null;
+    for (const cand of localadmins) {
+      if (lon < cand.minLon || lon > cand.maxLon || lat < cand.minLat || lat > cand.maxLat) continue;
+      try {
+        if (booleanPointInPolygon(pt, cand.la.geometry)) {
+          containing = cand.la;
+          break;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+    
+    if (!containing) {
+      orphanPoints++;
+      continue;
+    }
+    
+    if (!groups.has(containing)) groups.set(containing, []);
+    groups.get(containing).push({ raw, lon, lat });
+  }
+  
+  log('blue', `   Deduplicated points (polygon twin exists): ${dedupedPoints}`);
+  log('blue', `   Points outside any localadmin (skipped):   ${orphanPoints}`);
+  
+  // 3. Voronoi per localadmin
+  const smallSquare = (lon, lat) => {
+    const d = 0.0015; // ~150m
+    return {
+      type: 'Polygon',
+      coordinates: [[
+        [lon - d, lat - d], [lon + d, lat - d],
+        [lon + d, lat + d], [lon - d, lat + d],
+        [lon - d, lat - d]
+      ]]
+    };
+  };
+  
+  let voronoiCount = 0;
+  let fallbackCount = 0;
+  
+  // Indeks bbox dzielnic-poligonów: ich teren wycinamy z komórek Voronoi,
+  // żeby enklawy z prawdziwą granicą (np. Chorltonville wewnątrz
+  // Chorlton-cum-Hardy) zostały przy swoim poligonie
+  const polygonIndex = polygonRecords.map(rec => {
+    const [minLon, minLat, maxLon, maxLat] = String(rec.bbox).split(',').map(Number);
+    return { rec, minLon, minLat, maxLon, maxLat };
+  });
+  
+  for (const [la, pts] of groups) {
+    const [laMinLon, laMinLat, laMaxLon, laMaxLat] = String(la.bbox).split(',').map(Number);
+    const pad = 0.01;
+    const voronoiBBox = [laMinLon - pad, laMinLat - pad, laMaxLon + pad, laMaxLat + pad];
+    
+    let cells = null;
+    try {
+      const fc = featureCollection(pts.map(p => point([p.lon, p.lat])));
+      cells = turfVoronoi(fc, { bbox: voronoiBBox });
+    } catch (e) {
+      cells = null;
+    }
+    
+    const laFeature = feature(la.geometry);
+    
+    // Dzielnice-poligony mogące przecinać ten localadmin (bbox prefilter)
+    const laPolygons = polygonIndex.filter(p =>
+      p.minLon <= laMaxLon && p.maxLon >= laMinLon &&
+      p.minLat <= laMaxLat && p.maxLat >= laMinLat
+    );
+    
+    for (let i = 0; i < pts.length; i++) {
+      const { raw, lon, lat } = pts[i];
+      
+      // Przytnij komórkę Voronoi do granicy localadmin
+      let clipped = null;
+      const cell = cells && cells.features ? cells.features[i] : null;
+      
+      if (cell && cell.geometry) {
+        try {
+          clipped = turfIntersect(cell, laFeature);
+        } catch (e) {
+          clipped = null;
+        }
+      }
+      
+      // Wytnij z komórki teren dzielnic z prawdziwym poligonem
+      if (clipped && clipped.geometry) {
+        const [cMinLon, cMinLat, cMaxLon, cMaxLat] = calculateBBox(extractAllCoordinates(clipped.geometry)).split(',').map(Number);
+        
+        for (const p of laPolygons) {
+          if (!clipped) break;
+          if (p.minLon > cMaxLon || p.maxLon < cMinLon || p.minLat > cMaxLat || p.maxLat < cMinLat) continue;
+          
+          try {
+            clipped = turfDifference(clipped, feature(p.rec.geometry));
+          } catch (e) {
+            // difference failed - keep current cell (possible overlap is acceptable)
+          }
+        }
+      }
+      
+      let geometry = null;
+      if (clipped && clipped.geometry) {
+        geometry = clipped.geometry;
+        voronoiCount++;
+      } else {
+        geometry = smallSquare(lon, lat);
+        fallbackCount++;
+      }
+      
+      const coords = extractAllCoordinates(geometry);
+      // Pozycja oryginalnego node'a - stabilny punkt do budowania hierarchii
+      // (rodzice liczeni od pozycji dzielnicy, nie od kształtu komórki)
+      const centroid = { lat, lon };
+      
+      processedFeatures.push({
+        wofId: osmIdToWofId(raw.osmId, usedIds),
+        onsCode: `OSM_${raw.osmId}`,
+        name: raw.name,
+        placetype: 'neighbourhood',
+        centroid,
+        innerPoint: centroid,
+        bbox: calculateBBox(coords),
+        area: calculateArea(geometry),
+        geometry,
+        nameEn: null,
+        srcGeom: 'osm-voronoi'
+      });
+      added++;
+    }
+  }
+  
+  log('blue', `   Voronoi polygons: ${voronoiCount}, fallback squares: ${fallbackCount}`);
+  
+  stats.processed += added;
+  stats.byPlacetype['neighbourhood'] = (stats.byPlacetype['neighbourhood'] || 0) + added;
+  
+  log('green', `   ✅ Added ${added} neighbourhoods\n`);
+}
+
+/**
+ * Buduje indeks potencjalnych rodziców per placetype.
+ * Kandydaci posortowani po area (rosnąco — preferujemy najmniejszy zawierający
+ * polygon) z rozparsowanym bbox do szybkiego pre-filtra.
+ */
+function buildParentIndex(allFeatures) {
+  const index = {};
+  for (const pt of HIERARCHY_ORDER) index[pt] = [];
+
+  for (const f of allFeatures) {
+    if (!f.geometry || f.isSynthetic) continue;
+    if (!index[f.placetype]) continue;
+
+    const [minLon, minLat, maxLon, maxLat] = String(f.bbox).split(',').map(Number);
+    index[f.placetype].push({ feature: f, minLon, minLat, maxLon, maxLat });
+  }
+
+  for (const pt of HIERARCHY_ORDER) {
+    index[pt].sort((a, b) => a.feature.area - b.feature.area);
+  }
+
+  return index;
+}
+
+/**
+ * Znajduje parent dla danego feature używając Point-in-Polygon.
+ *
+ * Jeśli na bezpośrednio wyższym poziomie nie ma kandydata zawierającego punkt
+ * (np. brak metropolitan county), iteruje dalej w górę hierarchii — bez tego
+ * łańcuch urywał się i region/country zostawały -1.
+ */
+function findParent(innerPoint, placetype, parentIndex) {
+  const placetypeIndex = HIERARCHY_ORDER.indexOf(placetype);
+  if (placetypeIndex <= 0) return null; // country nie ma parent
+
+  const pt = point([innerPoint.lon, innerPoint.lat]);
+
+  for (let level = placetypeIndex - 1; level >= 0; level--) {
+    const candidates = parentIndex[HIERARCHY_ORDER[level]];
+
+    for (const cand of candidates) {
+      // Pre-filtr bbox przed kosztownym point-in-polygon
+      if (innerPoint.lon < cand.minLon || innerPoint.lon > cand.maxLon ||
+          innerPoint.lat < cand.minLat || innerPoint.lat > cand.maxLat) {
+        continue;
+      }
+
+      try {
+        if (booleanPointInPolygon(pt, cand.feature.geometry)) {
+          return cand.feature;
+        }
+      } catch (e) {
+        // Skip invalid geometries
+        continue;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Buduje pełną hierarchię dla danego feature
  */
-function buildHierarchy(featureData, allFeatures) {
+function buildHierarchy(featureData, parentIndex, londonBoroughIds, hasSyntheticLondon) {
   const hierarchy = {
     country_id: -1,
     region_id: -1,
     county_id: -1,
     localadmin_id: -1,
-    locality_id: -1
+    locality_id: -1,
+    neighbourhood_id: -1
   };
   
   // Ustaw własny ID
   hierarchy[`${featureData.placetype}_id`] = featureData.wofId;
   
-  // Special case: London Boroughs (E09) should have "London" as locality
-  // This ensures Pelias returns "London" instead of borough names in locality field
-  if (featureData.placetype === 'localadmin' && featureData.onsCode.startsWith('E09')) {
-    const londonLocality = allFeatures.find(f => 
-      f.onsCode === 'SYNTHETIC_LONDON'
-    );
-    
-    if (londonLocality) {
-      hierarchy.locality_id = londonLocality.wofId;
-    }
-  }
-  
-  // Iteruj w górę hierarchii
+  // Iteruj w górę hierarchii (findParent sam przeskakuje brakujące poziomy)
   let currentFeature = featureData;
-  let currentPlacetype = featureData.placetype;
   
-  while (currentFeature && currentPlacetype) {
-    // Znajdź parent
-    const parent = findParent(currentFeature.centroid, currentPlacetype, allFeatures);
+  while (currentFeature) {
+    const parent = findParent(
+      currentFeature.innerPoint || currentFeature.centroid,
+      currentFeature.placetype,
+      parentIndex
+    );
     
     if (!parent) break;
     
-    // Dodaj parent do hierarchii
-    hierarchy[`${parent.placetype}_id`] = parent.wofId;
+    // Dodaj parent do hierarchii (nie nadpisuj już ustawionych poziomów)
+    const parentKey = `${parent.placetype}_id`;
+    if (hierarchy[parentKey] === -1) {
+      hierarchy[parentKey] = parent.wofId;
+    }
     
     // Przejdź do parent
     currentFeature = parent;
-    currentPlacetype = parent.placetype;
+  }
+  
+  // Special case: everything inside a London Borough (E09) should have "London"
+  // as locality (boroughs themselves, and neighbourhoods within them).
+  // This ensures Pelias returns "London" instead of borough names in locality field.
+  if (hasSyntheticLondon &&
+      hierarchy.locality_id === -1 &&
+      hierarchy.localadmin_id !== -1 &&
+      londonBoroughIds.has(hierarchy.localadmin_id)) {
+    hierarchy.locality_id = SYNTHETIC_LONDON_ID;
   }
   
   return hierarchy;
@@ -417,7 +782,7 @@ function loadFeaturesFromFile(filePath) {
 /**
  * Główna funkcja konwersji
  */
-function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
+function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath, osmNeighbourhoodsPath) {
   log('cyan', '\n🇬🇧  ONS to WOF SQLite Converter');
   log('cyan', '=====================================\n');
   
@@ -533,6 +898,7 @@ function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
     
     const coords = extractAllCoordinates(geometry);
     const centroid = calculateCentroid(coords);
+    const innerPoint = calculateInnerPoint(geometry, centroid);
     const bbox = calculateBBox(coords);
     const area = calculateArea(geometry);
     
@@ -544,6 +910,7 @@ function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
       name,
       placetype,
       centroid,
+      innerPoint,
       bbox,
       area,
       geometry,
@@ -558,6 +925,34 @@ function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
   progressBar1.stop();
   
   log('green', `✅ Pass 1 complete: ${stats.processed} features processed\n`);
+  
+  // Deduplicate features sharing an ONS code - E06/E08/E09 districts appear in
+  // BOTH the CTYUA (counties) and LAD datasets. Without dedup they'd get
+  // duplicate ancestors rows (geojson/spr dedupe via INSERT OR REPLACE,
+  // ancestors does not).
+  {
+    const seenCodes = new Set();
+    const deduped = [];
+    let dupCount = 0;
+    
+    for (const f of processedFeatures) {
+      if (seenCodes.has(f.onsCode)) {
+        stats.processed--;
+        stats.byPlacetype[f.placetype]--;
+        stats.skipped++;
+        dupCount++;
+        continue;
+      }
+      seenCodes.add(f.onsCode);
+      deduped.push(f);
+    }
+    
+    if (dupCount > 0) {
+      processedFeatures.length = 0;
+      processedFeatures.push(...deduped);
+      log('yellow', `⚠️  Removed ${dupCount} duplicate features (same ONS code in multiple datasets)\n`);
+    }
+  }
   
   // Create synthetic "London" locality for all London Boroughs
   log('blue', '🏙️  Creating synthetic London locality...');
@@ -590,11 +985,12 @@ function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
     // but keep wof:placetype='locality' in GeoJSON body so hierarchy resolution works correctly
     // This allows: boroughs found via localadmin PiP -> London resolved from their hierarchy
     const syntheticLondon = {
-      wofId: 999999999,
+      wofId: SYNTHETIC_LONDON_ID,
       onsCode: 'SYNTHETIC_LONDON',
       name: 'London',
       placetype: 'locality',  // Used in GeoJSON body for hierarchy resolution
       centroid: finalCentroid,
+      innerPoint: calculateInnerPoint(londonGeometry, finalCentroid),
       bbox: finalBBox,
       area: finalArea,
       geometry: londonGeometry || null,  // Use OSM boundary if available
@@ -620,6 +1016,19 @@ function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
     log('yellow', '   ⚠️  No London Boroughs found, skipping synthetic London creation\n');
   }
   
+  // OSM neighbourhoods (optional): suburb/neighbourhood/quarter -> placetype=neighbourhood
+  if (osmNeighbourhoodsPath) {
+    log('blue', '🏘️  Loading OSM neighbourhoods...');
+    const rawNeighbourhoods = loadOsmNeighbourhoods(osmNeighbourhoodsPath);
+    log('blue', `   Found ${rawNeighbourhoods.length} named suburb/neighbourhood/quarter features`);
+    
+    if (rawNeighbourhoods.length > 0) {
+      processOsmNeighbourhoods(rawNeighbourhoods, processedFeatures, stats);
+    } else {
+      console.log();
+    }
+  }
+  
   // PASS 2: Buduj hierarchię
   log('magenta', '🔗 PASS 2: Building hierarchy...');
   
@@ -632,13 +1041,25 @@ function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
   
   progressBar2.start(processedFeatures.length, 0, { status: 'Building hierarchy...' });
   
+  // Indeks rodziców (bbox + sort po area) budowany raz — bez tego Pass 2
+  // skanuje liniowo wszystkie features dla każdego szukania rodzica
+  const parentIndex = buildParentIndex(processedFeatures);
+  
+  // London Boroughs (E09) - do reguły locality=London
+  const londonBoroughIds = new Set(
+    processedFeatures
+      .filter(f => f.placetype === 'localadmin' && f.onsCode.startsWith('E09'))
+      .map(f => f.wofId)
+  );
+  const hasSyntheticLondon = processedFeatures.some(f => f.onsCode === 'SYNTHETIC_LONDON');
+  
   const featuresWithHierarchy = [];
   
   for (let i = 0; i < processedFeatures.length; i++) {
     const featureData = processedFeatures[i];
     
     // Buduj hierarchię
-    const hierarchy = buildHierarchy(featureData, processedFeatures);
+    const hierarchy = buildHierarchy(featureData, parentIndex, londonBoroughIds, hasSyntheticLondon);
     
     featuresWithHierarchy.push({
       ...featureData,
@@ -738,13 +1159,17 @@ function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
     for (let i = 0; i < featuresWithHierarchy.length; i++) {
       const fd = featuresWithHierarchy[i];
       
-      // Określ parent_id (pierwszy wyższy poziom w hierarchii)
+      // Określ parent_id (pierwszy USTAWIONY wyższy poziom w hierarchii —
+      // niektóre poziomy mogą nie istnieć, np. brak county w części kraju)
       const placetypeIndex = HIERARCHY_ORDER.indexOf(fd.placetype);
       let parentId = -1;
       
-      if (placetypeIndex > 0) {
-        const parentPlacetype = HIERARCHY_ORDER[placetypeIndex - 1];
-        parentId = fd.hierarchy[`${parentPlacetype}_id`] || -1;
+      for (let level = placetypeIndex - 1; level >= 0; level--) {
+        const candidate = fd.hierarchy[`${HIERARCHY_ORDER[level]}_id`];
+        if (candidate && candidate !== -1) {
+          parentId = candidate;
+          break;
+        }
       }
       
       // Utwórz WOF GeoJSON record
@@ -759,8 +1184,8 @@ function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
           'wof:hierarchy': [fd.hierarchy],
           'wof:country': 'GB',
           
-          'geom:latitude': fd.centroid.lat,
-          'geom:longitude': fd.centroid.lon,
+          'geom:latitude': (fd.innerPoint || fd.centroid).lat,
+          'geom:longitude': (fd.innerPoint || fd.centroid).lon,
           'geom:bbox': fd.bbox,
           'geom:area': fd.area,
           
@@ -770,10 +1195,10 @@ function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
           'edtf:cessation': 'uuuu',
           'edtf:inception': 'uuuu',
           
-          'src:geom': 'ons',
+          'src:geom': fd.srcGeom || 'ons',
           'src:geom_alt': [],
           
-          'ons:code': fd.onsCode,
+          ...(fd.srcGeom ? { 'osm:id': fd.onsCode.replace(/^OSM_/, '') } : { 'ons:code': fd.onsCode }),
           
           ...(fd.nameEn && { 'name:cym_x_preferred': [fd.nameEn] }),
           ...(fd.placetype === 'country' && { 'iso:country': 'GB' })
@@ -806,8 +1231,8 @@ function convertOnsToWofSqlite(inputPath, outputPath, londonGeojsonPath) {
         fd.name,
         sprPlacetype,
         countryValue,
-        fd.centroid.lat,
-        fd.centroid.lon,
+        (fd.innerPoint || fd.centroid).lat,
+        (fd.innerPoint || fd.centroid).lon,
         minLat,
         minLon,
         maxLat,
@@ -871,9 +1296,10 @@ program
   .requiredOption('-i, --input <path>', 'Input GeoJSON file (merged ONS data)')
   .requiredOption('-o, --output <path>', 'Output SQLite file', 'whosonfirst-data-ons-uk.db')
   .option('--london-geojson <path>', 'Path to Greater London GeoJSON file (for synthetic London locality)')
+  .option('--osm-neighbourhoods <path>', 'Path to OSM neighbourhoods GeoJSON (from extract-osm-neighbourhoods.sh)')
   .parse(process.argv);
 
 const options = program.opts();
 
 // Run conversion
-convertOnsToWofSqlite(options.input, options.output, options.londonGeojson);
+convertOnsToWofSqlite(options.input, options.output, options.londonGeojson, options.osmNeighbourhoods);

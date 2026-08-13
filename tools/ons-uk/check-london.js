@@ -10,19 +10,27 @@ console.log('🔍 London Locality Verification');
 console.log('========================================\n');
 
 // 1. Check for synthetic "London" locality
-console.log('1️⃣  Synthetic "London" locality:');
+// Ghost loader technique: SPR stores placetype='macrocounty' (so the record is
+// loaded AFTER localadmin and doesn't interfere with borough PiP), while the
+// GeoJSON body keeps wof:placetype='locality' for hierarchy resolution.
+console.log('1️⃣  Synthetic "London" locality (ghost loader):');
 const londonLocality = db.prepare(`
-  SELECT id, name, placetype, latitude, longitude
-  FROM spr 
-  WHERE name = 'London' AND placetype = 'locality'
+  SELECT s.id, s.name, s.placetype, s.latitude, s.longitude,
+         json_extract(g.body, '$.properties."wof:placetype"') as geojson_placetype
+  FROM spr s
+  JOIN geojson g ON g.id = s.id
+  WHERE s.name = 'London' AND s.placetype = 'macrocounty'
 `).get();
 
-if (londonLocality) {
-  console.log('   ✅ Found synthetic London locality');
+if (londonLocality && londonLocality.geojson_placetype === 'locality') {
+  console.log('   ✅ Found synthetic London (SPR: macrocounty, GeoJSON: locality)');
   console.log(`   ID: ${londonLocality.id}`);
   console.log(`   Coordinates: ${londonLocality.latitude.toFixed(4)}, ${londonLocality.longitude.toFixed(4)}\n`);
+} else if (londonLocality) {
+  console.log(`   ❌ Found in SPR but GeoJSON wof:placetype is "${londonLocality.geojson_placetype}" (expected "locality")!\n`);
+  process.exit(1);
 } else {
-  console.log('   ❌ Synthetic London locality NOT found!\n');
+  console.log('   ❌ Synthetic London NOT found!\n');
   process.exit(1);
 }
 
@@ -42,10 +50,11 @@ console.log(`   Found ${boroughsWithLondon.count} London Boroughs linked to "Lon
 // 3. Check total London Boroughs
 console.log('\n3️⃣  Total London Boroughs (E09):');
 const totalBoroughs = db.prepare(`
-  SELECT COUNT(*) as count, placetype
-  FROM spr 
-  WHERE id BETWEEN 836000000 AND 837000000
-  AND placetype = 'localadmin'
+  SELECT COUNT(*) as count
+  FROM spr s
+  JOIN geojson g ON g.id = s.id
+  WHERE s.placetype = 'localadmin'
+  AND json_extract(g.body, '$.properties."ons:code"') LIKE 'E09%'
 `).get();
 
 console.log(`   Total: ${totalBoroughs.count} boroughs`);

@@ -8,6 +8,7 @@ Tools for creating Who's on First (WOF) SQLite databases from various official d
 tools/
 ├── ons-uk/          # UK ONS Official Boundaries (~9,137 features)
 ├── ign-spain/       # Spain IGN Official Boundaries (~8,196 features)
+├── cod-ukraine/     # Ukraine OCHA COD-AB boundaries (~31,600 features)
 ├── osm/             # OpenStreetMap Boundaries (any region)
 ├── package.json     # Shared Node.js dependencies
 └── node_modules/    # Shared dependency directory
@@ -57,7 +58,28 @@ See [ign-spain/README.md](ign-spain/README.md) for details.
 
 ---
 
-### 3. OSM - OpenStreetMap Boundaries
+### 3. COD Ukraine - Official Ukraine Boundaries
+
+**Directory:** [`cod-ukraine/`](cod-ukraine/)
+
+Administrative polygons from OCHA COD-AB (geometry from SSPE Kartographia): oblast, raion, hromada, and settlement footprints.
+
+- **Data Source:** HDX `cod-ab-ukr`
+- **Features:** Country, oblasts, raions, hromadas, settlements
+- **Total:** about 31,600 features
+- **License:** CC BY-IGO
+
+**Usage:**
+```bash
+cd cod-ukraine/
+./prepare-cod-ukraine.sh
+```
+
+See [cod-ukraine/README.md](cod-ukraine/README.md) for details.
+
+---
+
+### 4. OSM - OpenStreetMap Boundaries
 
 **Directory:** [`osm/`](osm/)
 

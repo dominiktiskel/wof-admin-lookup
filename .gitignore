@@ -17,3 +17,4 @@ tools/cod-ukraine/output/
 tools/osm/*.pbf
 tools/osm/*.geojson
 tools/osm/*.db
+tools/osm/output/

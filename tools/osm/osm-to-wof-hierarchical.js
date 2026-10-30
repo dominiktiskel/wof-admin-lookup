@@ -75,6 +75,20 @@ const COUNTRY_PROFILES = {
       '9': 'borough',
       '10': 'neighbourhood'
     }
+  },
+
+  // Bulgaria: 4=oblast, 5=obshtina, 8=settlement land (zemlishte).
+  // Levels 6 and 7 are leftover tagging, not a real tier.
+  'BG': {
+    adminLevelMap: {
+      '2': 'country',
+      '4': 'region',
+      '5': 'localadmin',
+      '8': 'locality',
+      '9': 'borough',
+      '10': 'neighbourhood'
+    },
+    skipUnmappedAdminLevel: true
   }
 };
 
@@ -460,6 +474,8 @@ function convertGeoJsonToWofSqlite(inputPath, outputPath, options = {}) {
         placetype = 'localadmin';
         log('blue', `   🏛️  City of London: overriding admin_level=6 → localadmin`);
       }
+    } else if (adminLevel && profile.skipUnmappedAdminLevel) {
+      // Known leftover admin_level (e.g. BG 6/7). Do not promote it via place=*.
     } else if (placeTag && PLACE_TO_PLACETYPE[placeTag]) {
       // Nie ma admin_level ale ma place=* - użyj mapowania place
       placetype = PLACE_TO_PLACETYPE[placeTag];

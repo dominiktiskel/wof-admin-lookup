@@ -317,6 +317,9 @@ case "${COUNTRY,,}" in
     germany)
         COUNTRY_CODE="DE"
         ;;
+    bulgaria)
+        COUNTRY_CODE="BG"
+        ;;
     france)
         COUNTRY_CODE="FR"
         ;;
